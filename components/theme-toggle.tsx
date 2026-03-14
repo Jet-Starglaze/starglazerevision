@@ -51,7 +51,7 @@ export default function ThemeToggle() {
     <button
       aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
       aria-pressed={theme === "dark"}
-      className="group relative inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/60 bg-white/75 text-slate-800 shadow-lg shadow-purple-950/10 backdrop-blur transition hover:-translate-y-0.5 hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:bg-white/[0.05] dark:text-slate-100 dark:hover:border-purple-400/40 dark:hover:text-white"
+      className="group relative inline-flex h-11 w-11 items-center justify-center rounded-full border border-sky-100 bg-white/85 text-slate-800 shadow-lg shadow-sky-950/10 transition hover:-translate-y-0.5 hover:border-sky-300 hover:text-sky-700 dark:border-white/10 dark:bg-slate-950/70 dark:text-slate-100 dark:hover:border-sky-400/40 dark:hover:text-white"
       onClick={toggleTheme}
       type="button"
     >

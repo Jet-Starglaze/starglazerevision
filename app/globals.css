@@ -2,21 +2,21 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 :root {
-  --background: #faf6ff;
-  --foreground: #160f2c;
+  --background: #f7fbff;
+  --foreground: #10213b;
   --panel: rgba(255, 255, 255, 0.72);
   --panel-strong: rgba(255, 255, 255, 0.9);
-  --border-subtle: rgba(124, 58, 237, 0.14);
-  --ring: rgba(139, 92, 246, 0.45);
+  --border-subtle: rgba(59, 130, 246, 0.14);
+  --ring: rgba(59, 130, 246, 0.45);
 }
 
 .dark {
-  --background: #07030d;
-  --foreground: #f7f2ff;
-  --panel: rgba(18, 12, 33, 0.76);
-  --panel-strong: rgba(15, 10, 28, 0.92);
-  --border-subtle: rgba(196, 181, 253, 0.14);
-  --ring: rgba(196, 181, 253, 0.55);
+  --background: #06101d;
+  --foreground: #eef6ff;
+  --panel: rgba(9, 22, 38, 0.76);
+  --panel-strong: rgba(7, 18, 31, 0.92);
+  --border-subtle: rgba(147, 197, 253, 0.16);
+  --ring: rgba(147, 197, 253, 0.55);
 }
 
 @theme inline {
@@ -50,7 +50,7 @@ body {
 }
 
 ::selection {
-  background: rgb(168 85 247 / 0.2);
+  background: rgb(59 130 246 / 0.2);
   color: var(--foreground);
 }
 
