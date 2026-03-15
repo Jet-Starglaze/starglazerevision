@@ -3,7 +3,6 @@ import MobileMenu from "@/components/mobile-menu";
 import ThemeToggle from "@/components/theme-toggle";
 
 const navItems = [
-  { label: "Subjects", href: "#subjects" },
   { label: "How it works", href: "#how-it-works" },
   { label: "Why students use it", href: "#why-students-use-it" },
   { label: "Log in", href: "/login" },
