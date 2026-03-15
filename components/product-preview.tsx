@@ -68,7 +68,7 @@ export default function ProductPreview() {
 
               <div className="mt-4 flex flex-wrap items-center gap-2 text-sm font-semibold">
                 <span className="rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-slate-500 dark:border-white/10 dark:bg-white/[0.05] dark:text-slate-400">
-                  3/6
+                  2/6
                 </span>
                 <span className="text-slate-300 dark:text-slate-600">
                   {"\u2192"}
@@ -98,7 +98,7 @@ export default function ProductPreview() {
                   Initial answer
                 </p>
                 <span className="rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 dark:border-white/10 dark:bg-white/[0.05] dark:text-slate-300">
-                  3/6
+                  2/6
                 </span>
               </div>
 
