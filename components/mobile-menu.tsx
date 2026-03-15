@@ -2,17 +2,17 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-
-type NavItem = {
-  label: string;
-  href: string;
-};
+import type { NavLinkItem } from "@/lib/navigation";
 
 type MobileMenuProps = {
-  items: NavItem[];
+  items: NavLinkItem[];
+  primaryAction: NavLinkItem;
 };
 
-export default function MobileMenu({ items }: MobileMenuProps) {
+export default function MobileMenu({
+  items,
+  primaryAction,
+}: MobileMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -115,6 +115,7 @@ export default function MobileMenu({ items }: MobileMenuProps) {
                   }`}
                   href={item.href}
                   onClick={closeMenu}
+                  prefetch={item.prefetch}
                   style={itemStyle}
                 >
                   {item.label}
@@ -127,13 +128,14 @@ export default function MobileMenu({ items }: MobileMenuProps) {
               className={`mt-2 inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition duration-200 hover:from-sky-700 hover:to-blue-800 ${
                 isOpen ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"
               }`}
-              href="/login"
+              href={primaryAction.href}
               onClick={closeMenu}
+              prefetch={primaryAction.prefetch}
               style={{
                 transitionDelay: isOpen ? `${items.length * 35}ms` : "0ms",
               }}
             >
-              Start Revising
+              {primaryAction.label}
             </Link>
           </div>
         </div>

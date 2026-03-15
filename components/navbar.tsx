@@ -1,14 +1,18 @@
 import Link from "next/link";
+import { getAuthNavigationState } from "@/lib/auth-navigation";
+import type { NavLinkItem } from "@/lib/navigation";
 import MobileMenu from "@/components/mobile-menu";
 import ThemeToggle from "@/components/theme-toggle";
 
-const navItems = [
+const baseNavItems: NavLinkItem[] = [
   { label: "How it works", href: "#how-it-works" },
   { label: "Why students use it", href: "#why-students-use-it" },
-  { label: "Log in", href: "/login" },
 ];
 
-export default function Navbar() {
+export default async function Navbar() {
+  const { accountAction, primaryAction } = await getAuthNavigationState();
+  const navItems = [...baseNavItems, accountAction];
+
   return (
     <header className="sticky top-0 z-50 px-4 pt-4 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-6xl rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
@@ -25,7 +29,7 @@ export default function Navbar() {
 
           <div className="flex items-center gap-2 md:hidden">
             <ThemeToggle />
-            <MobileMenu items={navItems} />
+            <MobileMenu items={navItems} primaryAction={primaryAction} />
           </div>
 
           <div className="hidden items-center gap-2 md:flex">
@@ -44,6 +48,7 @@ export default function Navbar() {
                     key={item.href}
                     className="rounded-xl px-4 py-2 transition hover:bg-slate-100 hover:text-sky-700 dark:hover:bg-slate-900 dark:hover:text-sky-200"
                     href={item.href}
+                    prefetch={item.prefetch}
                   >
                     {item.label}
                   </Link>
@@ -55,9 +60,10 @@ export default function Navbar() {
 
             <Link
               className="inline-flex min-h-11 items-center justify-center rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:from-sky-700 hover:to-blue-800"
-              href="/login"
+              href={primaryAction.href}
+              prefetch={primaryAction.prefetch}
             >
-              Start Revising
+              {primaryAction.label}
             </Link>
           </div>
         </div>
