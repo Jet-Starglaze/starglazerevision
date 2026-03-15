@@ -1,6 +1,6 @@
 import Link from "next/link";
 import FeatureCard from "@/components/feature-card";
-import MouseTrail from "@/components/mouse-trail";
+import LandingPageIcons from "@/components/landing-page-icons";
 import Navbar from "@/components/navbar";
 import ProductPreview from "@/components/product-preview";
 
@@ -68,19 +68,20 @@ const afterRevision = [
 
 export default function Home() {
   return (
-    <div className="relative overflow-x-clip bg-[linear-gradient(180deg,#f7fbff_0%,#edf5ff_38%,#ffffff_100%)] dark:bg-[linear-gradient(180deg,#071220_0%,#081625_40%,#050c16_100%)]">
-      <MouseTrail />
+    <div className="relative isolate overflow-x-clip bg-[linear-gradient(180deg,#f7fbff_0%,#edf5ff_38%,#ffffff_100%)] dark:bg-[linear-gradient(180deg,#071220_0%,#081625_40%,#050c16_100%)]">
+      <LandingPageIcons />
 
-      <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[40rem] overflow-hidden">
+      <div className="pointer-events-none absolute inset-x-0 top-0 -z-20 h-[40rem] overflow-hidden">
         <div className="absolute left-1/2 top-6 h-80 w-[48rem] -translate-x-1/2 rounded-full bg-sky-300/25 blur-3xl dark:bg-sky-500/12" />
         <div className="absolute left-[-5rem] top-32 h-72 w-72 rounded-full bg-blue-200/35 blur-3xl motion-safe:animate-[float_18s_ease-in-out_infinite] dark:bg-blue-500/10" />
         <div className="absolute right-[-6rem] top-24 h-80 w-80 rounded-full bg-cyan-200/35 blur-3xl motion-safe:animate-[drift_22s_ease-in-out_infinite] dark:bg-cyan-400/10" />
       </div>
 
-      <Navbar />
+      <div className="relative z-10">
+        <Navbar />
 
-      <main>
-        <section className="px-4 pb-18 pt-10 sm:px-6 lg:px-8 lg:pb-24 lg:pt-16">
+        <main>
+          <section className="px-4 pb-18 pt-10 sm:px-6 lg:px-8 lg:pb-24 lg:pt-16">
           <div className="mx-auto max-w-4xl text-center">
             <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-600 dark:text-sky-300">
               Faster. Better. Revision.
@@ -111,13 +112,13 @@ export default function Home() {
 
             <ProductPreview />
           </div>
-        </section>
+          </section>
 
-        <section
-          aria-labelledby="how-it-works-heading"
-          className="scroll-mt-28 px-4 py-18 sm:px-6 lg:px-8"
-          id="how-it-works"
-        >
+          <section
+            aria-labelledby="how-it-works-heading"
+            className="scroll-mt-28 px-4 py-18 sm:px-6 lg:px-8"
+            id="how-it-works"
+          >
           <div className="mx-auto max-w-6xl">
             <div className="mx-auto max-w-3xl text-center">
               <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-600 dark:text-sky-300">
@@ -131,7 +132,7 @@ export default function Home() {
               </h2>
               <p className="mt-4 text-lg leading-8 text-slate-600 dark:text-slate-300">
                 Pick what to revise, answer the question, and use feedback to
-                make the next response better.
+                make the next answer better.
               </p>
             </div>
 
@@ -154,19 +155,19 @@ export default function Home() {
               ))}
             </div>
           </div>
-        </section>
+          </section>
 
-        <section
-          className="scroll-mt-28 px-4 py-18 sm:px-6 lg:px-8"
-          id="why-students-use-it"
-        >
+          <section
+            className="scroll-mt-28 px-4 py-18 sm:px-6 lg:px-8"
+            id="why-students-use-it"
+          >
           <div className="mx-auto max-w-6xl">
             <div className="mx-auto max-w-3xl text-center">
               <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-600 dark:text-sky-300">
                 Why students use it
               </p>
               <h2 className="mt-4 text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl dark:text-white">
-                Built for clearer answers, clearer feedback, and more focused
+                Clearer answers, clearer feedback, and more focused
                 revision.
               </h2>
               <p className="mt-4 text-lg leading-8 text-slate-600 dark:text-slate-300">
@@ -216,9 +217,9 @@ export default function Home() {
               </article>
             </div>
           </div>
-        </section>
+          </section>
 
-        <section className="px-4 pb-24 pt-10 sm:px-6 lg:px-8">
+          <section className="px-4 pb-24 pt-10 sm:px-6 lg:px-8">
           <div className="mx-auto max-w-5xl rounded-[2.25rem] border border-sky-100/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(239,246,255,0.98))] p-10 text-center shadow-[0_26px_80px_-44px_rgba(14,116,144,0.25)] dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(8,18,32,0.96),rgba(7,18,31,0.98))] dark:shadow-[0_30px_84px_-44px_rgba(0,0,0,0.86)] sm:p-12">
             <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-700 dark:text-sky-200">
               Start revising
@@ -240,34 +241,35 @@ export default function Home() {
               </Link>
             </div>
           </div>
-        </section>
-      </main>
+          </section>
+        </main>
 
-      <footer className="border-t border-sky-100/80 px-4 py-8 text-sm text-slate-600 dark:border-white/10 dark:text-slate-400 sm:px-6 lg:px-8">
-        <div className="mx-auto flex max-w-6xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="font-semibold text-slate-900 dark:text-white">
-              StarglazeRevision
-            </p>
-            <p className="mt-1">Built for smarter exam practice.</p>
-          </div>
+        <footer className="border-t border-sky-100/80 px-4 py-8 text-sm text-slate-600 dark:border-white/10 dark:text-slate-400 sm:px-6 lg:px-8">
+          <div className="mx-auto flex max-w-6xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="font-semibold text-slate-900 dark:text-white">
+                StarglazeRevision
+              </p>
+              <p className="mt-1">Built for smarter exam practice.</p>
+            </div>
 
-          <div className="flex items-center gap-4">
-            <Link
-              className="transition hover:text-sky-700 dark:hover:text-sky-200"
-              href="/login"
-            >
-              Log in
-            </Link>
-            <Link
-              className="transition hover:text-sky-700 dark:hover:text-sky-200"
-              href="/login"
-            >
-              Start Revising
-            </Link>
+            <div className="flex items-center gap-4">
+              <Link
+                className="transition hover:text-sky-700 dark:hover:text-sky-200"
+                href="/login"
+              >
+                Log in
+              </Link>
+              <Link
+                className="transition hover:text-sky-700 dark:hover:text-sky-200"
+                href="/login"
+              >
+                Start Revising
+              </Link>
+            </div>
           </div>
-        </div>
-      </footer>
+        </footer>
+      </div>
     </div>
   );
 }
