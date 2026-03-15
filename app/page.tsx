@@ -114,48 +114,7 @@ export default function Home() {
           </div>
           </section>
 
-          <section
-            aria-labelledby="how-it-works-heading"
-            className="scroll-mt-28 px-4 py-18 sm:px-6 lg:px-8"
-            id="how-it-works"
-          >
-          <div className="mx-auto max-w-6xl">
-            <div className="mx-auto max-w-3xl text-center">
-              <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-600 dark:text-sky-300">
-                How it works
-              </p>
-              <h2
-                className="mt-4 text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl dark:text-white"
-                id="how-it-works-heading"
-              >
-                A simple revision loop you can actually use.
-              </h2>
-              <p className="mt-4 text-lg leading-8 text-slate-600 dark:text-slate-300">
-                Pick what to revise, answer the question, and use feedback to
-                make the next answer better.
-              </p>
-            </div>
 
-            <div className="mt-12 grid gap-6 lg:grid-cols-3">
-              {steps.map((step) => (
-                <article
-                  key={step.number}
-                  className="rounded-[1.75rem] border border-sky-100/80 bg-white/92 p-6 shadow-[0_20px_60px_-38px_rgba(14,116,144,0.2)] dark:border-white/10 dark:bg-slate-950/58 dark:shadow-[0_24px_72px_-42px_rgba(0,0,0,0.82)]"
-                >
-                  <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-600 to-blue-700 text-sm font-semibold text-white shadow-[0_16px_36px_-18px_rgba(37,99,235,0.55)]">
-                    {step.number}
-                  </span>
-                  <h3 className="mt-5 text-xl font-semibold text-slate-950 dark:text-white">
-                    {step.title}
-                  </h3>
-                  <p className="mt-4 text-base leading-7 text-slate-600 dark:text-slate-300">
-                    {step.description}
-                  </p>
-                </article>
-              ))}
-            </div>
-          </div>
-          </section>
 
           <section
             className="scroll-mt-28 px-4 py-18 sm:px-6 lg:px-8"
@@ -225,11 +184,11 @@ export default function Home() {
               Start revising
             </p>
             <h2 className="mt-4 text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl dark:text-white">
-              Start revising with clearer feedback and less guesswork.
+              Clearer feedback; less guesswork.
             </h2>
             <p className="mx-auto mt-4 max-w-2xl text-lg leading-8 text-slate-700 dark:text-slate-300">
-              Practise exam questions, improve your answers faster, and go into
-              the next exam knowing what to revise next.
+              Practise exam questions. Improve answers faster. Go into
+              the next exam confident.
             </p>
 
             <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
