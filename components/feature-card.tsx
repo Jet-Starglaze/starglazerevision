@@ -12,8 +12,8 @@ export default function FeatureCard({
   description,
 }: FeatureCardProps) {
   return (
-    <article className="group h-full rounded-[1.6rem] border border-sky-100/80 bg-white/92 p-6 shadow-[0_18px_52px_-36px_rgba(14,116,144,0.2)] transition duration-300 hover:-translate-y-1 hover:border-sky-200 hover:shadow-[0_24px_60px_-34px_rgba(37,99,235,0.24)] dark:border-white/10 dark:bg-slate-950/58 dark:shadow-[0_24px_70px_-42px_rgba(0,0,0,0.82)]">
-      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-600 to-blue-700 text-white shadow-[0_16px_36px_-18px_rgba(37,99,235,0.56)]">
+    <article className="group h-full rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition duration-200 hover:border-sky-300 dark:border-slate-800 dark:bg-slate-950 dark:hover:border-slate-700">
+      <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200">
         {icon}
       </div>
 

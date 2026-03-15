@@ -49,17 +49,12 @@ export default function MobileMenu({ items }: MobileMenuProps) {
     setIsOpen(false);
   }
 
-  const glassPanelStyle = {
-    backdropFilter: "blur(32px) saturate(190%)",
-    WebkitBackdropFilter: "blur(32px) saturate(190%)",
-  };
-
   return (
     <div ref={menuRef} className="relative md:hidden">
       <button
         aria-expanded={isOpen}
         aria-label={isOpen ? "Close navigation menu" : "Open navigation menu"}
-        className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-sky-100 bg-white/90 text-slate-800 shadow-[0_14px_32px_-18px_rgba(15,23,42,0.2)] transition hover:border-sky-300 hover:text-sky-700 dark:border-white/10 dark:bg-slate-950/72 dark:text-slate-100 dark:hover:border-sky-400/40 dark:hover:text-sky-200"
+        className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-800 shadow-sm transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:border-sky-500 dark:hover:text-sky-200"
         onClick={() => setIsOpen((open) => !open)}
         type="button"
       >
@@ -89,18 +84,12 @@ export default function MobileMenu({ items }: MobileMenuProps) {
             : "pointer-events-none -translate-y-2 scale-95 opacity-0"
         }`}
       >
-        <div
-          className="relative overflow-hidden rounded-[1.6rem] border border-white/60 bg-white/34 shadow-[0_24px_60px_-30px_rgba(14,116,144,0.28)] supports-[backdrop-filter]:bg-white/22 dark:border-white/12 dark:bg-slate-950/42 dark:shadow-[0_28px_72px_-34px_rgba(0,0,0,0.88)] dark:supports-[backdrop-filter]:bg-slate-950/28"
-          style={glassPanelStyle}
-        >
-          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.68),rgba(219,234,254,0.36))] dark:bg-[linear-gradient(180deg,rgba(30,41,59,0.42),rgba(2,6,23,0.22))]" />
-          <div className="pointer-events-none absolute inset-px rounded-[calc(1.6rem-1px)] border border-white/45 dark:border-white/8" />
-
-          <div className="relative p-3">
+        <div className="rounded-2xl border border-slate-200 bg-white shadow-md dark:border-slate-800 dark:bg-slate-950">
+          <div className="p-3">
             <nav className="flex flex-col gap-2">
             {items.map((item, index) => {
               const itemClassName =
-                "w-full rounded-2xl px-4 py-3 text-left text-sm font-medium text-slate-700 transition duration-200 hover:bg-white/42 hover:text-sky-700 dark:text-slate-200 dark:hover:bg-white/[0.08] dark:hover:text-sky-200";
+                "w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-700 transition duration-200 hover:bg-slate-100 hover:text-sky-700 dark:text-slate-200 dark:hover:bg-slate-900 dark:hover:text-sky-200";
 
               const itemStyle = {
                 transitionDelay: isOpen ? `${index * 35}ms` : "0ms",
@@ -135,7 +124,7 @@ export default function MobileMenu({ items }: MobileMenuProps) {
             </nav>
 
             <Link
-              className={`mt-2 inline-flex min-h-11 w-full items-center justify-center rounded-full bg-gradient-to-r from-sky-600 to-blue-700 px-5 py-3 text-sm font-semibold text-white shadow-[0_16px_36px_-18px_rgba(37,99,235,0.56)] transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_22px_42px_-18px_rgba(37,99,235,0.54)] ${
+              className={`mt-2 inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition duration-200 hover:from-sky-700 hover:to-blue-800 ${
                 isOpen ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"
               }`}
               href="/login"

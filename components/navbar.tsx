@@ -11,13 +11,13 @@ const navItems = [
 export default function Navbar() {
   return (
     <header className="sticky top-0 z-50 px-4 pt-4 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-6xl rounded-[1.4rem] border border-sky-100/80 bg-white/86 shadow-[0_18px_50px_-34px_rgba(14,116,144,0.28)] backdrop-blur-md dark:border-white/10 dark:bg-slate-950/78 dark:shadow-[0_22px_60px_-36px_rgba(0,0,0,0.84)]">
+      <div className="mx-auto max-w-6xl rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
         <div className="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
           <Link
             className="inline-flex min-w-0 items-center gap-3 text-sm font-semibold tracking-[0.18em] text-slate-900 dark:text-white"
             href="/"
           >
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-600 to-blue-700 text-white shadow-[0_14px_30px_-16px_rgba(37,99,235,0.58)]">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-700 text-white shadow-sm dark:bg-sky-600">
               <StarIcon className="h-4 w-4" />
             </span>
             <span className="truncate">StarglazeRevision</span>
@@ -34,7 +34,7 @@ export default function Navbar() {
                 item.href.startsWith("#") ? (
                   <a
                     key={item.href}
-                    className="rounded-full px-4 py-2 transition hover:bg-sky-50 hover:text-sky-700 dark:hover:bg-sky-400/10 dark:hover:text-sky-200"
+                    className="rounded-xl px-4 py-2 transition hover:bg-slate-100 hover:text-sky-700 dark:hover:bg-slate-900 dark:hover:text-sky-200"
                     href={item.href}
                   >
                     {item.label}
@@ -42,7 +42,7 @@ export default function Navbar() {
                 ) : (
                   <Link
                     key={item.href}
-                    className="rounded-full px-4 py-2 transition hover:bg-sky-50 hover:text-sky-700 dark:hover:bg-sky-400/10 dark:hover:text-sky-200"
+                    className="rounded-xl px-4 py-2 transition hover:bg-slate-100 hover:text-sky-700 dark:hover:bg-slate-900 dark:hover:text-sky-200"
                     href={item.href}
                   >
                     {item.label}
@@ -54,7 +54,7 @@ export default function Navbar() {
             <ThemeToggle />
 
             <Link
-              className="inline-flex min-h-11 items-center justify-center rounded-full bg-gradient-to-r from-sky-600 to-blue-700 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_16px_36px_-18px_rgba(37,99,235,0.56)] transition hover:-translate-y-0.5 hover:shadow-[0_22px_42px_-18px_rgba(37,99,235,0.54)]"
+              className="inline-flex min-h-11 items-center justify-center rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:from-sky-700 hover:to-blue-800"
               href="/login"
             >
               Start Revising

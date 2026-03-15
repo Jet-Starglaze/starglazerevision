@@ -5,33 +5,10 @@ import Navbar from "@/components/navbar";
 import ProductPreview from "@/components/product-preview";
 
 const primaryButtonClass =
-  "inline-flex min-h-12 items-center justify-center rounded-full bg-gradient-to-r from-sky-600 to-blue-700 px-6 py-3 text-sm font-semibold text-white shadow-[0_18px_40px_-18px_rgba(37,99,235,0.55)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_52px_-20px_rgba(37,99,235,0.52)]";
+  "inline-flex min-h-12 items-center justify-center rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:from-sky-700 hover:to-blue-800";
 
 const secondaryButtonClass =
-  "inline-flex min-h-12 items-center justify-center rounded-full border border-sky-200 bg-white/92 px-6 py-3 text-sm font-semibold text-slate-800 transition hover:-translate-y-0.5 hover:border-sky-300 hover:text-sky-700 dark:border-white/10 dark:bg-slate-950/60 dark:text-white dark:hover:border-sky-400/40 dark:hover:text-sky-200";
-
-
-
-const steps = [
-  {
-    number: "01",
-    title: "Choose what you need to revise",
-    description:
-      "Pick the subject, topic, and question style that matches the area you need to improve next.",
-  },
-  {
-    number: "02",
-    title: "Answer an exam-style question",
-    description:
-      "Write the kind of answer you would in the real exam, from short responses to longer marked questions.",
-  },
-  {
-    number: "03",
-    title: "Use feedback to improve",
-    description:
-      "Get it marked instantly. Fix your answers on the spot. Get full marks.",
-  },
-];
+  "inline-flex min-h-12 items-center justify-center rounded-xl border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:hover:border-sky-500 dark:hover:text-sky-200";
 
 const benefits = [
   {
@@ -68,14 +45,8 @@ const afterRevision = [
 
 export default function Home() {
   return (
-    <div className="relative isolate overflow-x-clip bg-[linear-gradient(180deg,#f7fbff_0%,#edf5ff_38%,#ffffff_100%)] dark:bg-[linear-gradient(180deg,#071220_0%,#081625_40%,#050c16_100%)]">
+    <div className="relative isolate overflow-x-clip bg-slate-50 dark:bg-slate-950">
       <LandingPageIcons />
-
-      <div className="pointer-events-none absolute inset-x-0 top-0 -z-20 h-[40rem] overflow-hidden">
-        <div className="absolute left-1/2 top-6 h-80 w-[48rem] -translate-x-1/2 rounded-full bg-sky-300/25 blur-3xl dark:bg-sky-500/12" />
-        <div className="absolute left-[-5rem] top-32 h-72 w-72 rounded-full bg-blue-200/35 blur-3xl motion-safe:animate-[float_18s_ease-in-out_infinite] dark:bg-blue-500/10" />
-        <div className="absolute right-[-6rem] top-24 h-80 w-80 rounded-full bg-cyan-200/35 blur-3xl motion-safe:animate-[drift_22s_ease-in-out_infinite] dark:bg-cyan-400/10" />
-      </div>
 
       <div className="relative z-10">
         <Navbar />
@@ -130,8 +101,8 @@ export default function Home() {
                 revision.
               </h2>
               <p className="mt-4 text-lg leading-8 text-slate-600 dark:text-slate-300">
-                Instead of guessing whether revision is working, students can
-                see what they did well and what still needs to improve.
+                Instead of guessing whether revision is working, you&apos;ll
+                see what you did well and what still needs to improve.
               </p>
             </div>
 
@@ -147,7 +118,7 @@ export default function Home() {
             </div>
 
             <div className="mt-10 grid gap-6 lg:grid-cols-2">
-              <article className="rounded-[1.75rem] border border-slate-200 bg-white/92 p-6 shadow-[0_20px_60px_-38px_rgba(15,23,42,0.12)] dark:border-white/10 dark:bg-slate-950/58 dark:shadow-[0_24px_72px_-42px_rgba(0,0,0,0.82)]">
+              <article className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-950">
                 <p className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-500 dark:text-slate-300">
                   Traditional revision
                 </p>
@@ -161,7 +132,7 @@ export default function Home() {
                 </ul>
               </article>
 
-              <article className="rounded-[1.75rem] border border-sky-100/90 bg-sky-50/80 p-6 shadow-[0_20px_60px_-38px_rgba(14,116,144,0.2)] dark:border-sky-400/20 dark:bg-sky-400/10 dark:shadow-[0_24px_72px_-42px_rgba(0,0,0,0.82)]">
+              <article className="rounded-2xl border border-sky-200 bg-sky-50 p-6 shadow-sm dark:border-sky-900 dark:bg-sky-950">
                 <p className="text-sm font-semibold uppercase tracking-[0.22em] text-sky-700 dark:text-sky-200">
                   With StarglazeRevision
                 </p>
@@ -179,7 +150,7 @@ export default function Home() {
           </section>
 
           <section className="px-4 pb-24 pt-10 sm:px-6 lg:px-8">
-          <div className="mx-auto max-w-5xl rounded-[2.25rem] border border-sky-100/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(239,246,255,0.98))] p-10 text-center shadow-[0_26px_80px_-44px_rgba(14,116,144,0.25)] dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(8,18,32,0.96),rgba(7,18,31,0.98))] dark:shadow-[0_30px_84px_-44px_rgba(0,0,0,0.86)] sm:p-12">
+          <div className="mx-auto max-w-5xl rounded-2xl border border-slate-200 bg-white p-10 text-center shadow-md dark:border-slate-800 dark:bg-slate-950 sm:p-12">
             <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-700 dark:text-sky-200">
               Start revising
             </p>
@@ -203,7 +174,7 @@ export default function Home() {
           </section>
         </main>
 
-        <footer className="border-t border-sky-100/80 px-4 py-8 text-sm text-slate-600 dark:border-white/10 dark:text-slate-400 sm:px-6 lg:px-8">
+        <footer className="border-t border-slate-200 px-4 py-8 text-sm text-slate-600 dark:border-slate-800 dark:text-slate-400 sm:px-6 lg:px-8">
           <div className="mx-auto flex max-w-6xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="font-semibold text-slate-900 dark:text-white">
