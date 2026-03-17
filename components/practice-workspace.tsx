@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type {
   PracticeModule,
   PracticeSubtopic,
-  PracticeTopic,
 } from "@/lib/mock-biology-practice";
 import PracticeSidebar from "@/components/practice/practice-sidebar";
 import PracticeWorkspaceShell from "@/components/practice/practice-workspace-shell";
@@ -21,35 +20,46 @@ type SelectedPracticeSubtopic = PracticeSubtopic & {
   topicName: string;
 };
 
+type PracticeSelectionTree = {
+  moduleSubtopicIds: Map<number, number[]>;
+  topicSubtopicIds: Map<number, number[]>;
+};
+
 export default function PracticeWorkspace({
   subjectName,
   subjectSlug,
   modules,
 }: PracticeWorkspaceProps) {
-  const [selectedSubtopicIds, setSelectedSubtopicIds] = useState<string[]>([]);
-  const [expandedModuleIds, setExpandedModuleIds] = useState<string[]>(
+  const [selectedSubtopicIds, setSelectedSubtopicIds] = useState<Set<number>>(
+    () => new Set(),
+  );
+  const [expandedModuleIds, setExpandedModuleIds] = useState<number[]>(
     modules.map((module) => module.id),
   );
-  const [expandedTopicIds, setExpandedTopicIds] = useState<string[]>(
+  const [expandedTopicIds, setExpandedTopicIds] = useState<number[]>(
     modules.flatMap((module) => module.topics.map((topic) => topic.id)),
   );
   const [activeMobilePane, setActiveMobilePane] = useState<
     "syllabus" | "session" | null
   >(null);
 
-  const selectedSubtopicIdSet = useMemo(() => {
-    return new Set(selectedSubtopicIds);
+  const selectionTree = useMemo(() => {
+    return buildPracticeSelectionTree(modules);
+  }, [modules]);
+
+  const selectedSubtopicIdList = useMemo(() => {
+    return Array.from(selectedSubtopicIds);
   }, [selectedSubtopicIds]);
 
   const practiceSessionKey = useMemo(() => {
-    return [...selectedSubtopicIds].sort().join("|");
-  }, [selectedSubtopicIds]);
+    return [...selectedSubtopicIdList].sort((left, right) => left - right).join("|");
+  }, [selectedSubtopicIdList]);
 
   const selectedSubtopics = useMemo<SelectedPracticeSubtopic[]>(() => {
     return modules.flatMap((module) =>
       module.topics.flatMap((topic) =>
         topic.subtopics
-          .filter((subtopic) => selectedSubtopicIdSet.has(subtopic.id))
+          .filter((subtopic) => selectedSubtopicIds.has(subtopic.id))
           .map((subtopic) => ({
             ...subtopic,
             moduleLabel: module.label,
@@ -58,7 +68,7 @@ export default function PracticeWorkspace({
           })),
       ),
     );
-  }, [modules, selectedSubtopicIdSet]);
+  }, [modules, selectedSubtopicIds]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -87,7 +97,7 @@ export default function PracticeWorkspace({
     };
   }, [activeMobilePane]);
 
-  function toggleExpandedModule(moduleId: string) {
+  function toggleExpandedModule(moduleId: number) {
     setExpandedModuleIds((currentIds) => {
       return currentIds.includes(moduleId)
         ? currentIds.filter((id) => id !== moduleId)
@@ -95,7 +105,7 @@ export default function PracticeWorkspace({
     });
   }
 
-  function toggleExpandedTopic(topicId: string) {
+  function toggleExpandedTopic(topicId: number) {
     setExpandedTopicIds((currentIds) => {
       return currentIds.includes(topicId)
         ? currentIds.filter((id) => id !== topicId)
@@ -103,46 +113,32 @@ export default function PracticeWorkspace({
     });
   }
 
-  function toggleSubtopicSelection(subtopicId: string) {
+  function toggleSubtopicSelection(subtopicId: number) {
     setSelectedSubtopicIds((currentIds) => {
-      return currentIds.includes(subtopicId)
-        ? currentIds.filter((id) => id !== subtopicId)
-        : [...currentIds, subtopicId];
+      return toggleSingleSubtopicSelection(currentIds, subtopicId);
     });
   }
 
-  function toggleTopicSelection(topic: PracticeTopic) {
-    const descendantIds = getTopicSubtopicIds(topic);
-
+  function toggleTopicSelection(topicId: number) {
     setSelectedSubtopicIds((currentIds) => {
-      const currentSet = new Set(currentIds);
-      const hasEveryDescendant = descendantIds.every((id) => currentSet.has(id));
-
-      if (hasEveryDescendant) {
-        return currentIds.filter((id) => !descendantIds.includes(id));
-      }
-
-      return [...new Set([...currentIds, ...descendantIds])];
+      return toggleBranchSelection(
+        currentIds,
+        selectionTree.topicSubtopicIds.get(topicId) ?? [],
+      );
     });
   }
 
-  function toggleModuleSelection(module: PracticeModule) {
-    const descendantIds = getModuleSubtopicIds(module);
-
+  function toggleModuleSelection(moduleId: number) {
     setSelectedSubtopicIds((currentIds) => {
-      const currentSet = new Set(currentIds);
-      const hasEveryDescendant = descendantIds.every((id) => currentSet.has(id));
-
-      if (hasEveryDescendant) {
-        return currentIds.filter((id) => !descendantIds.includes(id));
-      }
-
-      return [...new Set([...currentIds, ...descendantIds])];
+      return toggleBranchSelection(
+        currentIds,
+        selectionTree.moduleSubtopicIds.get(moduleId) ?? [],
+      );
     });
   }
 
   function clearSelection() {
-    setSelectedSubtopicIds([]);
+    setSelectedSubtopicIds(() => new Set());
   }
 
   return (
@@ -168,7 +164,7 @@ export default function PracticeWorkspace({
             onToggleModuleSelection={toggleModuleSelection}
             onToggleSubtopicSelection={toggleSubtopicSelection}
             onToggleTopicSelection={toggleTopicSelection}
-            selectedSubtopicIdSet={selectedSubtopicIdSet}
+            selectedSubtopicIds={selectedSubtopicIds}
             subjectName={subjectName}
           />
         </div>
@@ -179,6 +175,7 @@ export default function PracticeWorkspace({
           onCloseSessionPanel={() => setActiveMobilePane(null)}
           onOpenSessionPanel={() => setActiveMobilePane("session")}
           onOpenSidebar={() => setActiveMobilePane("syllabus")}
+          selectedSubtopicIds={selectedSubtopicIdList}
           selectedSubtopics={selectedSubtopics}
           subjectName={subjectName}
           subjectSlug={subjectSlug}
@@ -200,7 +197,7 @@ export default function PracticeWorkspace({
           onToggleModuleSelection={toggleModuleSelection}
           onToggleSubtopicSelection={toggleSubtopicSelection}
           onToggleTopicSelection={toggleTopicSelection}
-          selectedSubtopicIdSet={selectedSubtopicIdSet}
+          selectedSubtopicIds={selectedSubtopicIds}
           subjectName={subjectName}
         />
       </MobileSidebarDrawer>
@@ -238,10 +235,63 @@ function MobileSidebarDrawer({
   );
 }
 
-function getTopicSubtopicIds(topic: PracticeTopic) {
-  return topic.subtopics.map((subtopic) => subtopic.id);
+function buildPracticeSelectionTree(
+  modules: PracticeModule[],
+): PracticeSelectionTree {
+  const moduleSubtopicIds = new Map<number, number[]>();
+  const topicSubtopicIds = new Map<number, number[]>();
+
+  modules.forEach((module) => {
+    const nextModuleSubtopicIds: number[] = [];
+
+    module.topics.forEach((topic) => {
+      const nextTopicSubtopicIds = topic.subtopics.map((subtopic) => subtopic.id);
+      topicSubtopicIds.set(topic.id, nextTopicSubtopicIds);
+      nextModuleSubtopicIds.push(...nextTopicSubtopicIds);
+    });
+
+    moduleSubtopicIds.set(module.id, nextModuleSubtopicIds);
+  });
+
+  return {
+    moduleSubtopicIds,
+    topicSubtopicIds,
+  };
 }
 
-function getModuleSubtopicIds(module: PracticeModule) {
-  return module.topics.flatMap((topic) => getTopicSubtopicIds(topic));
+function toggleSingleSubtopicSelection(
+  currentIds: Set<number>,
+  subtopicId: number,
+) {
+  const nextIds = new Set(currentIds);
+
+  if (nextIds.has(subtopicId)) {
+    nextIds.delete(subtopicId);
+  } else {
+    nextIds.add(subtopicId);
+  }
+
+  return nextIds;
+}
+
+function toggleBranchSelection(
+  currentIds: Set<number>,
+  descendantIds: readonly number[],
+) {
+  if (descendantIds.length === 0) {
+    return currentIds;
+  }
+
+  const nextIds = new Set(currentIds);
+  const isFullySelected = descendantIds.every((id) => nextIds.has(id));
+
+  descendantIds.forEach((id) => {
+    if (isFullySelected) {
+      nextIds.delete(id);
+    } else {
+      nextIds.add(id);
+    }
+  });
+
+  return nextIds;
 }

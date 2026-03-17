@@ -1,19 +1,22 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import Breadcrumbs from "@/components/breadcrumbs";
 import PracticeInputBar from "@/components/practice/practice-input-bar";
 import PracticeSessionPanel from "@/components/practice/practice-session-panel";
+import type {
+  ApiErrorResponse,
+  GenerateQuestionResponse,
+  MarkAnswerResponse,
+} from "@/lib/mock-biology-practice-api";
 import {
-  type MockPracticeFeedback,
-  type PracticeQuestion,
-  type PracticeQuestionType,
-  type PracticeSessionLength,
-  getEligiblePracticeQuestions,
+  isPracticeQuestionCommandWord,
+  PracticeQuestionFilterMode,
+  PracticeSessionLength,
 } from "@/lib/mock-biology-practice";
 
 type WorkspaceSelectedSubtopic = {
-  id: string;
+  id: number;
   name: string;
   code: string;
   moduleLabel: string;
@@ -24,6 +27,7 @@ type WorkspaceSelectedSubtopic = {
 type PracticeWorkspaceShellProps = {
   subjectName: string;
   subjectSlug: string;
+  selectedSubtopicIds: number[];
   selectedSubtopics: WorkspaceSelectedSubtopic[];
   isSessionPanelOpen: boolean;
   onCloseSessionPanel: () => void;
@@ -31,12 +35,19 @@ type PracticeWorkspaceShellProps = {
   onOpenSidebar: () => void;
 };
 
-type PracticeStage = "ready" | "question" | "feedback" | "improving";
+type ThreadStage = "question" | "feedback" | "improving" | "complete";
 
 type PracticeAttempt = {
   attemptNumber: 1 | 2;
   answer: string;
-  feedback: MockPracticeFeedback;
+  feedback: MarkAnswerResponse;
+};
+
+type SessionThread = {
+  threadId: string;
+  question: GenerateQuestionResponse;
+  attempts: PracticeAttempt[];
+  stage: ThreadStage;
 };
 
 const primaryButtonClass =
@@ -48,163 +59,312 @@ const secondaryButtonClass =
 export default function PracticeWorkspaceShell({
   subjectName,
   subjectSlug,
+  selectedSubtopicIds,
   selectedSubtopics,
   isSessionPanelOpen,
   onCloseSessionPanel,
   onOpenSessionPanel,
   onOpenSidebar,
 }: PracticeWorkspaceShellProps) {
-  const [stage, setStage] = useState<PracticeStage>("ready");
-  const [questionType, setQuestionType] = useState<PracticeQuestionType>("mixed");
+  const [questionFilterMode, setQuestionFilterMode] =
+    useState<PracticeQuestionFilterMode>("mixed");
   const [sessionLength, setSessionLength] = useState<PracticeSessionLength>(5);
-  const [currentQuestion, setCurrentQuestion] = useState<PracticeQuestion | null>(
-    null,
-  );
+  const [sessionThreads, setSessionThreads] = useState<SessionThread[]>([]);
   const [answerDraft, setAnswerDraft] = useState("");
-  const [attempts, setAttempts] = useState<PracticeAttempt[]>([]);
   const [questionCursor, setQuestionCursor] = useState(0);
   const [completedQuestionCount, setCompletedQuestionCount] = useState(0);
-  const [showNoEligibleMessage, setShowNoEligibleMessage] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [answerError, setAnswerError] = useState<string | null>(null);
+  const [isGeneratingQuestion, setIsGeneratingQuestion] = useState(false);
+  const [isMarkingAnswer, setIsMarkingAnswer] = useState(false);
   const [isDesktopSessionPanelCollapsed, setIsDesktopSessionPanelCollapsed] =
     useState(false);
+  const sessionRequestTokenRef = useRef(0);
 
-  const selectedSubtopicIds = useMemo(() => {
-    return selectedSubtopics.map((subtopic) => subtopic.id);
-  }, [selectedSubtopics]);
-
-  const eligibleQuestions = useMemo(() => {
-    return getEligiblePracticeQuestions(selectedSubtopicIds, questionType);
-  }, [questionType, selectedSubtopicIds]);
-
-  const currentQuestionContext = useMemo(() => {
-    if (!currentQuestion) {
-      return null;
-    }
-
-    return (
-      selectedSubtopics.find(
-        (subtopic) => subtopic.id === currentQuestion.subtopicId,
-      ) ?? null
-    );
-  }, [currentQuestion, selectedSubtopics]);
-
+  const activeThread = getActiveThread(sessionThreads);
+  const currentQuestion = activeThread?.question ?? null;
   const hasSelectedTopics = selectedSubtopics.length > 0;
-  const isSessionComplete = completedQuestionCount >= sessionLength;
-  const isActivePracticeStage =
-    stage === "question" || stage === "feedback" || stage === "improving";
+  const isSessionComplete =
+    completedQuestionCount >= sessionLength &&
+    sessionThreads.length > 0 &&
+    activeThread === null;
+  const isGeneratingNextThread =
+    isGeneratingQuestion &&
+    activeThread === null &&
+    sessionThreads.length > 0 &&
+    !isSessionComplete;
   const canResetSession =
-    currentQuestion !== null ||
-    attempts.length > 0 ||
+    sessionThreads.length > 0 ||
     answerDraft.trim().length > 0 ||
     completedQuestionCount > 0 ||
-    showNoEligibleMessage;
-  const shouldShowComposer = stage === "question" || stage === "improving";
+    generationError !== null ||
+    answerError !== null;
+  const isSessionInProgress = sessionThreads.length > 0 || isGeneratingNextThread;
+  const primaryActionLabel = getPrimaryActionLabel(
+    sessionThreads.length,
+    activeThread !== null,
+  );
+  const sessionProgressLabel = `${completedQuestionCount} / ${sessionLength} completed`;
+  const sessionProgressMessage = isSessionComplete
+    ? "Session target reached. Reset to begin a fresh run."
+    : `${Math.max(sessionLength - completedQuestionCount, 0)} question${
+        sessionLength - completedQuestionCount === 1 ? "" : "s"
+      } left in this session.`;
+  const desktopLayoutClass = isDesktopSessionPanelCollapsed
+    ? "xl:grid-cols-[minmax(0,1fr)_3.75rem]"
+    : "xl:grid-cols-[minmax(0,1fr)_320px]";
 
   function resetSession() {
-    setStage("ready");
-    setCurrentQuestion(null);
+    sessionRequestTokenRef.current += 1;
+    setSessionThreads([]);
     setAnswerDraft("");
-    setAttempts([]);
     setQuestionCursor(0);
     setCompletedQuestionCount(0);
-    setShowNoEligibleMessage(false);
+    setGenerationError(null);
+    setAnswerError(null);
+    setIsGeneratingQuestion(false);
+    setIsMarkingAnswer(false);
     setIsDesktopSessionPanelCollapsed(false);
   }
 
-  function handleQuestionTypeChange(nextType: PracticeQuestionType) {
-    setQuestionType(nextType);
+  function handleQuestionFilterModeChange(
+    nextFilterMode: PracticeQuestionFilterMode,
+  ) {
+    setQuestionFilterMode(nextFilterMode);
     resetSession();
   }
 
-  function handleGenerateQuestion() {
-    if (selectedSubtopicIds.length === 0) {
-      return;
+  function handleSessionLengthChange(nextLength: PracticeSessionLength) {
+    setSessionLength(nextLength);
+  }
+
+  function handleAnswerDraftChange(nextValue: string) {
+    setAnswerDraft(nextValue);
+
+    if (answerError) {
+      setAnswerError(null);
+    }
+  }
+
+  async function fetchGeneratedQuestion(requestToken: number) {
+    const response = await fetch("/api/generate-question", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        subjectId: subjectSlug,
+        selectedSubtopicIds,
+        questionFilterMode,
+        sessionLength,
+        questionCursor,
+      }),
+    });
+    const body = await readResponseBody(response);
+
+    if (requestToken !== sessionRequestTokenRef.current) {
+      return null;
     }
 
-    if (eligibleQuestions.length === 0) {
-      setStage("ready");
-      setCurrentQuestion(null);
-      setAnswerDraft("");
-      setAttempts([]);
-      setShowNoEligibleMessage(true);
-      return;
+    if (!response.ok) {
+      setGenerationError(
+        getApiErrorMessage(body, "Could not generate a question right now."),
+      );
+      return null;
     }
 
-    const nextQuestion =
-      eligibleQuestions[questionCursor % eligibleQuestions.length] ?? null;
-
-    if (!nextQuestion) {
-      setShowNoEligibleMessage(true);
-      return;
+    if (!isGenerateQuestionResponse(body)) {
+      setGenerationError("Could not generate a question right now.");
+      return null;
     }
 
-    // TODO: Replace this local question selection with a real AI generation request.
-    setCurrentQuestion(nextQuestion);
+    return body;
+  }
+
+  function appendGeneratedThread(question: GenerateQuestionResponse) {
+    setSessionThreads((current) => [
+      ...current,
+      createSessionThread(question, current.length + 1),
+    ]);
     setQuestionCursor((current) => current + 1);
     setAnswerDraft("");
-    setAttempts([]);
-    setStage("question");
-    setShowNoEligibleMessage(false);
+    setGenerationError(null);
+    setAnswerError(null);
     setIsDesktopSessionPanelCollapsed(true);
   }
 
-  function handleSubmitAnswer() {
-    if (!currentQuestion) {
+  async function handleGenerateQuestion() {
+    if (
+      selectedSubtopicIds.length === 0 ||
+      activeThread !== null ||
+      isSessionComplete ||
+      isGeneratingQuestion
+    ) {
+      if (selectedSubtopicIds.length === 0) {
+        setGenerationError(
+          "Select at least one subtopic before generating a question.",
+        );
+      }
+
+      return;
+    }
+
+    const requestToken = sessionRequestTokenRef.current;
+
+    setGenerationError(null);
+    setAnswerError(null);
+    setIsGeneratingQuestion(true);
+
+    try {
+      const nextQuestion = await fetchGeneratedQuestion(requestToken);
+
+      if (!nextQuestion || requestToken !== sessionRequestTokenRef.current) {
+        return;
+      }
+
+      appendGeneratedThread(nextQuestion);
+    } catch {
+      if (requestToken === sessionRequestTokenRef.current) {
+        setGenerationError("Could not generate a question right now.");
+      }
+    } finally {
+      if (requestToken === sessionRequestTokenRef.current) {
+        setIsGeneratingQuestion(false);
+      }
+    }
+  }
+
+  async function handleSubmitAnswer() {
+    if (!activeThread || isMarkingAnswer) {
       return;
     }
 
     const trimmedAnswer = answerDraft.trim();
 
     if (!trimmedAnswer) {
+      setAnswerError("Answer text is required.");
       return;
     }
 
-    const nextAttemptNumber: 1 | 2 = stage === "improving" ? 2 : 1;
-    const nextAttempt: PracticeAttempt = {
-      attemptNumber: nextAttemptNumber,
-      answer: trimmedAnswer,
-      feedback:
-        nextAttemptNumber === 1
-          ? currentQuestion.firstAttemptFeedback
-          : currentQuestion.improvedAttemptFeedback,
-    };
+    const nextAttemptNumber: 1 | 2 =
+      activeThread.stage === "improving" ? 2 : 1;
+    const requestToken = sessionRequestTokenRef.current;
 
-    // TODO: Replace this mock marking step with a real AI feedback response.
-    setAttempts((current) => {
-      if (nextAttemptNumber === 1) {
-        return [nextAttempt];
+    setAnswerError(null);
+    setGenerationError(null);
+    setIsMarkingAnswer(true);
+
+    try {
+      const response = await fetch("/api/mark-answer", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...activeThread.question,
+          answerText: trimmedAnswer,
+          attemptNumber: nextAttemptNumber,
+        }),
+      });
+      const body = await readResponseBody(response);
+
+      if (requestToken !== sessionRequestTokenRef.current) {
+        return;
       }
 
-      return current.length > 0 ? [current[0], nextAttempt] : [nextAttempt];
-    });
+      if (!response.ok) {
+        setAnswerError(
+          getApiErrorMessage(body, "Could not review this answer right now."),
+        );
+        return;
+      }
 
-    if (nextAttemptNumber === 1) {
-      setCompletedQuestionCount((current) => current + 1);
+      if (!isMarkAnswerResponse(body)) {
+        setAnswerError("Could not review this answer right now.");
+        return;
+      }
+
+      const nextAttempt: PracticeAttempt = {
+        attemptNumber: nextAttemptNumber,
+        answer: trimmedAnswer,
+        feedback: body,
+      };
+
+      if (nextAttemptNumber === 1) {
+        setSessionThreads((current) =>
+          updateActiveThread(current, (thread) => ({
+            ...thread,
+            attempts: [nextAttempt],
+            stage: "feedback",
+          })),
+        );
+        setAnswerDraft(trimmedAnswer);
+        return;
+      }
+
+      setSessionThreads((current) =>
+        updateActiveThread(current, (thread) => ({
+          ...thread,
+          attempts:
+            thread.attempts.length > 0
+              ? [thread.attempts[0], nextAttempt]
+              : [nextAttempt],
+          stage: "complete",
+        })),
+      );
+      setAnswerDraft("");
+
+      const nextCompletedQuestionCount = completedQuestionCount + 1;
+      setCompletedQuestionCount(nextCompletedQuestionCount);
+
+      if (nextCompletedQuestionCount >= sessionLength) {
+        return;
+      }
+
+      setIsGeneratingQuestion(true);
+
+      try {
+        const nextQuestion = await fetchGeneratedQuestion(requestToken);
+
+        if (!nextQuestion || requestToken !== sessionRequestTokenRef.current) {
+          return;
+        }
+
+        appendGeneratedThread(nextQuestion);
+      } catch {
+        if (requestToken === sessionRequestTokenRef.current) {
+          setGenerationError("Could not generate a question right now.");
+        }
+      } finally {
+        if (requestToken === sessionRequestTokenRef.current) {
+          setIsGeneratingQuestion(false);
+        }
+      }
+    } catch {
+      if (requestToken === sessionRequestTokenRef.current) {
+        setAnswerError("Could not review this answer right now.");
+      }
+    } finally {
+      if (requestToken === sessionRequestTokenRef.current) {
+        setIsMarkingAnswer(false);
+      }
     }
-
-    setStage("feedback");
-    setAnswerDraft(trimmedAnswer);
   }
 
   function handleImproveAnswer() {
-    if (attempts.length === 0) {
+    if (!activeThread || activeThread.attempts.length === 0) {
       return;
     }
 
-    setAnswerDraft(attempts[0].answer);
-    setStage("improving");
+    setAnswerError(null);
+    setSessionThreads((current) =>
+      updateActiveThread(current, (thread) => ({
+        ...thread,
+        stage: "improving",
+      })),
+    );
+    setAnswerDraft(activeThread.attempts[0].answer);
   }
-
-  const primaryActionLabel = getPrimaryActionLabel(stage, currentQuestion);
-  const sessionProgressLabel = `${completedQuestionCount} / ${sessionLength} completed`;
-  const sessionProgressMessage = isSessionComplete
-    ? "Session target reached. You can keep going with extra questions."
-    : `${Math.max(sessionLength - completedQuestionCount, 0)} question${
-        sessionLength - completedQuestionCount === 1 ? "" : "s"
-      } left in this local session.`;
-  const desktopLayoutClass = isDesktopSessionPanelCollapsed
-    ? "xl:grid-cols-[minmax(0,1fr)_3.75rem]"
-    : "xl:grid-cols-[minmax(0,1fr)_320px]";
 
   return (
     <section className="relative flex min-h-full min-w-0 bg-slate-50 dark:bg-slate-950">
@@ -228,8 +388,8 @@ export default function PracticeWorkspaceShell({
                   Practice questions
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
-                  Focus on one Biology prompt at a time, then use the review to
-                  tighten the next answer.
+                  Move through a full Biology session one thread at a time and
+                  keep each completed question visible as you progress.
                 </p>
               </div>
 
@@ -254,7 +414,7 @@ export default function PracticeWorkspaceShell({
             <div className="mx-auto mt-4 flex w-full max-w-[1000px] flex-wrap gap-2">
               <InlineStatusPill>
                 {hasSelectedTopics
-                  ? `${selectedSubtopics.length} topic${
+                  ? `${selectedSubtopics.length} subtopic${
                       selectedSubtopics.length === 1 ? "" : "s"
                     } selected`
                   : `No topics selected in ${subjectName}`}
@@ -263,48 +423,65 @@ export default function PracticeWorkspaceShell({
             </div>
           </header>
 
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <div className="mx-auto flex w-full max-w-[1000px] flex-col px-4 py-4 sm:px-5 xl:px-6">
-                {stage === "ready" ? (
-                  <PracticeWorkspaceReadyState
-                    hasSelectedTopics={hasSelectedTopics}
-                    selectedTopicCount={selectedSubtopics.length}
-                  />
-                ) : currentQuestion ? (
-                  <PracticeConversationThread
-                    attempts={attempts}
-                    currentQuestion={currentQuestion}
-                    isImproving={stage === "improving"}
-                    onImproveAnswer={
-                      stage === "feedback" && attempts.length === 1
-                        ? handleImproveAnswer
-                        : null
-                    }
-                    selectedContext={currentQuestionContext}
-                    stage={stage}
-                  />
-                ) : (
-                  <PracticeWorkspaceReadyState
-                    hasSelectedTopics={hasSelectedTopics}
-                    selectedTopicCount={selectedSubtopics.length}
-                  />
-                )}
-              </div>
-            </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto flex w-full max-w-[1000px] flex-col px-4 py-4 sm:px-5 xl:px-6">
+              {sessionThreads.length === 0 ? (
+                <PracticeWorkspaceReadyState
+                  hasSelectedTopics={hasSelectedTopics}
+                  selectedTopicCount={selectedSubtopics.length}
+                />
+              ) : (
+                <div className="space-y-6 pb-4 sm:space-y-7 sm:pb-6">
+                  {sessionThreads.map((thread, index) =>
+                    thread.stage === "complete" ? (
+                      <CompletedPracticeThread
+                        key={thread.threadId}
+                        thread={thread}
+                        threadNumber={index + 1}
+                      />
+                    ) : (
+                      <ActivePracticeThread
+                        answerDraft={answerDraft}
+                        answerError={answerError}
+                        isMarkingAnswer={isMarkingAnswer}
+                        key={thread.threadId}
+                        onAnswerDraftChange={handleAnswerDraftChange}
+                        onImproveAnswer={
+                          thread.stage === "feedback" &&
+                          thread.attempts.length === 1
+                            ? handleImproveAnswer
+                            : null
+                        }
+                        onSubmitAnswer={handleSubmitAnswer}
+                        thread={thread}
+                        threadNumber={index + 1}
+                      />
+                    ),
+                  )}
 
-            {shouldShowComposer ? (
-              <div className="bg-gradient-to-t from-slate-50 via-slate-50/96 to-transparent px-4 pb-4 pt-3 dark:from-slate-950 dark:via-slate-950/96 dark:to-transparent sm:px-5 sm:pb-5 xl:px-6">
-                <div className="mx-auto w-full max-w-[1000px]">
-                  <PracticeInputBar
-                    onSubmit={handleSubmitAnswer}
-                    onValueChange={setAnswerDraft}
-                    submitDisabled={answerDraft.trim().length === 0}
-                    value={answerDraft}
-                  />
+                  {isGeneratingNextThread ? (
+                    <ThreadLoadingState
+                      nextThreadNumber={sessionThreads.length + 1}
+                    />
+                  ) : null}
+
+                  {generationError && activeThread === null && !isSessionComplete ? (
+                    <ThreadGenerationError
+                      message={generationError}
+                      onRetry={handleGenerateQuestion}
+                    />
+                  ) : null}
+
+                  {isSessionComplete ? (
+                    <SessionCompleteSummary
+                      completedQuestionCount={completedQuestionCount}
+                      onResetSession={resetSession}
+                      sessionLength={sessionLength}
+                    />
+                  ) : null}
                 </div>
-              </div>
-            ) : null}
+              )}
+            </div>
           </div>
         </div>
 
@@ -319,19 +496,20 @@ export default function PracticeWorkspaceShell({
               canReset={canResetSession}
               currentQuestion={currentQuestion}
               generateButtonLabel={primaryActionLabel}
-              isDeemphasized={isActivePracticeStage}
+              generationError={generationError}
+              isDeemphasized={isSessionInProgress}
+              isGeneratingQuestion={isGeneratingQuestion}
               isSessionComplete={isSessionComplete}
               onCollapse={() => setIsDesktopSessionPanelCollapsed(true)}
               onGenerateQuestion={handleGenerateQuestion}
-              onQuestionTypeChange={handleQuestionTypeChange}
+              onQuestionFilterModeChange={handleQuestionFilterModeChange}
               onResetSession={resetSession}
-              onSessionLengthChange={setSessionLength}
+              onSessionLengthChange={handleSessionLengthChange}
               progressLabel={sessionProgressLabel}
               progressMessage={sessionProgressMessage}
-              questionType={questionType}
+              questionFilterMode={questionFilterMode}
               selectedSubtopics={selectedSubtopics}
               sessionLength={sessionLength}
-              showNoEligibleMessage={showNoEligibleMessage}
             />
           )}
         </div>
@@ -346,19 +524,20 @@ export default function PracticeWorkspaceShell({
           canReset={canResetSession}
           currentQuestion={currentQuestion}
           generateButtonLabel={primaryActionLabel}
-          isDeemphasized={isActivePracticeStage}
+          generationError={generationError}
+          isDeemphasized={isSessionInProgress}
+          isGeneratingQuestion={isGeneratingQuestion}
           isSessionComplete={isSessionComplete}
           onClose={onCloseSessionPanel}
           onGenerateQuestion={handleGenerateQuestion}
-          onQuestionTypeChange={handleQuestionTypeChange}
+          onQuestionFilterModeChange={handleQuestionFilterModeChange}
           onResetSession={resetSession}
-          onSessionLengthChange={setSessionLength}
+          onSessionLengthChange={handleSessionLengthChange}
           progressLabel={sessionProgressLabel}
           progressMessage={sessionProgressMessage}
-          questionType={questionType}
+          questionFilterMode={questionFilterMode}
           selectedSubtopics={selectedSubtopics}
           sessionLength={sessionLength}
-          showNoEligibleMessage={showNoEligibleMessage}
         />
       </MobileSessionDrawer>
     </section>
@@ -389,13 +568,13 @@ function PracticeWorkspaceReadyState({
           Ready
         </p>
         <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">
-          Select topics and generate a question to start practicing.
+          Select topics and generate a question to start the session feed.
         </h2>
         <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-slate-600 dark:text-slate-300">
           {hasSelectedTopics
-            ? `${selectedTopicCount} topic${
+            ? `${selectedTopicCount} subtopic${
                 selectedTopicCount === 1 ? "" : "s"
-              } selected. Use the controls pane to generate the next Biology question.`
+              } selected. Use the controls pane to generate the first Biology question.`
             : "Use the syllabus pane to choose modules, topics, or subtopics first."}
         </p>
       </div>
@@ -403,44 +582,48 @@ function PracticeWorkspaceReadyState({
   );
 }
 
-type PracticeConversationThreadProps = {
-  stage: PracticeStage;
-  currentQuestion: PracticeQuestion;
-  attempts: PracticeAttempt[];
-  isImproving: boolean;
+type ActivePracticeThreadProps = {
+  thread: SessionThread;
+  threadNumber: number;
+  answerDraft: string;
+  answerError: string | null;
+  isMarkingAnswer: boolean;
+  onAnswerDraftChange: (value: string) => void;
+  onSubmitAnswer: () => void;
   onImproveAnswer: (() => void) | null;
-  selectedContext: WorkspaceSelectedSubtopic | null;
 };
 
-function PracticeConversationThread({
-  stage,
-  currentQuestion,
-  attempts,
-  isImproving,
+function ActivePracticeThread({
+  thread,
+  threadNumber,
+  answerDraft,
+  answerError,
+  isMarkingAnswer,
+  onAnswerDraftChange,
+  onSubmitAnswer,
   onImproveAnswer,
-  selectedContext,
-}: PracticeConversationThreadProps) {
-  const hasTurns = attempts.length > 0;
-  const isThreadComplete = stage === "feedback" && attempts.length > 1;
+}: ActivePracticeThreadProps) {
+  const isImproving = thread.stage === "improving";
+  const shouldShowComposer =
+    thread.stage === "question" || thread.stage === "improving";
+  const submitLabel = isMarkingAnswer
+    ? "Reviewing answer..."
+    : isImproving
+      ? "Submit improved answer"
+      : "Submit answer";
 
   return (
-    <article className="space-y-6 pb-3 sm:space-y-7 sm:pb-5">
-      <div className="sticky top-0 z-10 -mx-4 bg-slate-50/95 px-4 pb-4 pt-1 backdrop-blur dark:bg-slate-950/95 sm:-mx-5 sm:px-5 xl:-mx-6 xl:px-6">
-        <QuestionThreadHeader
-          isCondensed={hasTurns || isImproving}
-          question={currentQuestion}
-          selectedContext={selectedContext}
-        />
-      </div>
+    <article className="space-y-6 rounded-[30px] border border-slate-200 bg-white px-4 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:px-5 sm:py-5">
+      <QuestionThreadHeader
+        isCondensed={thread.attempts.length > 0 || isImproving}
+        question={thread.question}
+        threadNumber={threadNumber}
+      />
 
-      {hasTurns ? (
+      {thread.attempts.length > 0 ? (
         <div className="space-y-5">
-          {attempts.map((attempt) => (
-            <ThreadTurn
-              attempt={attempt}
-              key={attempt.attemptNumber}
-              maxMarks={currentQuestion.maxMarks}
-            />
+          {thread.attempts.map((attempt) => (
+            <ThreadTurn attempt={attempt} key={attempt.attemptNumber} />
           ))}
         </div>
       ) : (
@@ -466,25 +649,97 @@ function PracticeConversationThread({
         <ThreadActionBar message="Drafting attempt 2. Your revised answer will appear here as the next turn once you submit it." />
       ) : null}
 
-      {isThreadComplete ? (
-        <ThreadCompleteSummary
-          attempts={attempts}
-          maxMarks={currentQuestion.maxMarks}
-        />
+      {shouldShowComposer ? (
+        <div className="space-y-3 border-t border-slate-200/80 pt-5 dark:border-slate-800/80">
+          {answerError ? (
+            <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+              {answerError}
+            </div>
+          ) : null}
+
+          <PracticeInputBar
+            onSubmit={onSubmitAnswer}
+            onValueChange={onAnswerDraftChange}
+            readOnly={isMarkingAnswer}
+            submitDisabled={isMarkingAnswer || answerDraft.trim().length === 0}
+            submitLabel={submitLabel}
+            value={answerDraft}
+          />
+        </div>
       ) : null}
     </article>
   );
 }
 
+type CompletedPracticeThreadProps = {
+  thread: SessionThread;
+  threadNumber: number;
+};
+
+function CompletedPracticeThread({
+  thread,
+  threadNumber,
+}: CompletedPracticeThreadProps) {
+  const firstAttempt = thread.attempts[0] ?? null;
+  const finalAttempt = thread.attempts[thread.attempts.length - 1] ?? null;
+  const improvementLabel =
+    firstAttempt && finalAttempt
+      ? getImprovementLabel(firstAttempt, finalAttempt)
+      : "Improvement: not available";
+
+  return (
+    <article className="rounded-[24px] border border-slate-200/80 bg-white/80 px-4 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/65 sm:px-5">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
+              Question {threadNumber}
+            </span>
+            <span className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+              {getCommandWordLabel(thread.question.questionType)}
+            </span>
+            <span className="text-sm text-slate-500 dark:text-slate-400">
+              {thread.question.topicLabel} / {thread.question.subtopicLabel}
+            </span>
+          </div>
+
+          <p className="mt-3 text-base font-semibold leading-7 text-slate-900 dark:text-white">
+            {thread.question.questionText}
+          </p>
+        </div>
+
+        <span className="inline-flex shrink-0 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+          {thread.question.marks} marks
+        </span>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-slate-200/80 pt-4 text-sm leading-6 text-slate-600 dark:border-slate-800/80 dark:text-slate-300">
+        <span className="font-semibold text-emerald-700 dark:text-emerald-300">
+          Completed
+        </span>
+        {finalAttempt ? (
+          <span>
+            Final score:{" "}
+            <span className="font-semibold text-slate-950 dark:text-white">
+              {finalAttempt.feedback.estimatedMark}/{finalAttempt.feedback.maxMarks}
+            </span>
+          </span>
+        ) : null}
+        <span>{improvementLabel}</span>
+      </div>
+    </article>
+  );
+}
+
 type QuestionThreadHeaderProps = {
-  question: PracticeQuestion;
-  selectedContext: WorkspaceSelectedSubtopic | null;
+  question: GenerateQuestionResponse;
+  threadNumber: number;
   isCondensed: boolean;
 };
 
 function QuestionThreadHeader({
   question,
-  selectedContext,
+  threadNumber,
   isCondensed,
 }: QuestionThreadHeaderProps) {
   return (
@@ -493,13 +748,14 @@ function QuestionThreadHeader({
         <div className="min-w-0 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700 dark:border-slate-700 dark:bg-slate-950 dark:text-sky-200">
-              {question.questionLabel}
+              Question {threadNumber}
             </span>
-            {selectedContext ? (
-              <span className="text-sm text-slate-500 dark:text-slate-400">
-                {selectedContext.topicName} / {selectedContext.name}
-              </span>
-            ) : null}
+            <span className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+              {getCommandWordLabel(question.questionType)}
+            </span>
+            <span className="text-sm text-slate-500 dark:text-slate-400">
+              {question.topicLabel} / {question.subtopicLabel}
+            </span>
           </div>
 
           <p
@@ -509,13 +765,13 @@ function QuestionThreadHeader({
                 : "text-2xl leading-10 sm:text-[2rem] sm:leading-[1.45]"
             }`}
           >
-            {question.prompt}
+            {question.questionText}
           </p>
         </div>
 
         <div className="shrink-0">
           <span className="inline-flex rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
-            {question.maxMarks} marks
+            {question.marks} marks
           </span>
         </div>
       </div>
@@ -524,7 +780,7 @@ function QuestionThreadHeader({
         <span className="font-semibold text-slate-900 dark:text-white">
           Answer focus:
         </span>{" "}
-        {question.focus}
+        {question.answerFocus}
       </p>
     </section>
   );
@@ -532,9 +788,9 @@ function QuestionThreadHeader({
 
 function ThreadStartState() {
   return (
-    <section className="flex justify-center py-6">
+    <section className="flex justify-center py-3">
       <div className="max-w-xl text-center text-sm leading-7 text-slate-500 dark:text-slate-400">
-        Your first answer will appear here as the opening turn in this practice
+        Your first answer will appear here as the opening turn in this question
         thread.
       </div>
     </section>
@@ -543,15 +799,14 @@ function ThreadStartState() {
 
 type ThreadTurnProps = {
   attempt: PracticeAttempt;
-  maxMarks: number;
 };
 
-function ThreadTurn({ attempt, maxMarks }: ThreadTurnProps) {
+function ThreadTurn({ attempt }: ThreadTurnProps) {
   return (
     <div className="space-y-4">
       <ThreadBlock
         align="right"
-        caption={`Your answer · Attempt ${attempt.attemptNumber}`}
+        caption={`Your answer - Attempt ${attempt.attemptNumber}`}
         tone="answer"
       >
         <p className="whitespace-pre-wrap text-sm leading-7 text-inherit">
@@ -561,31 +816,27 @@ function ThreadTurn({ attempt, maxMarks }: ThreadTurnProps) {
 
       <ThreadBlock
         align="left"
-        caption={`AI review · Attempt ${attempt.attemptNumber}`}
+        caption={`AI review - Attempt ${attempt.attemptNumber}`}
         headerTrailing={
           <span className="inline-flex rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-            {attempt.feedback.awardedMarks}/{maxMarks}
+            {attempt.feedback.estimatedMark}/{attempt.feedback.maxMarks}
           </span>
         }
         tone="feedback"
       >
-        <p className="text-sm leading-7 text-slate-700 dark:text-slate-200">
-          {attempt.feedback.overallComment}
-        </p>
-
-        <div className="mt-5 space-y-5">
+        <div className="space-y-5">
           <FeedbackList
-            items={attempt.feedback.awardedPoints}
-            title="What is already working"
+            items={attempt.feedback.whatWasGood}
+            title="What was good"
             tone="positive"
           />
           <FeedbackList
             items={attempt.feedback.missingPoints}
-            title="What to tighten"
+            title="Missing points"
             tone="neutral"
           />
           <FeedbackList
-            items={attempt.feedback.improvementAdvice}
+            items={[attempt.feedback.improvementAdvice]}
             title="Improve the next draft"
             tone="advice"
           />
@@ -642,47 +893,85 @@ function ThreadActionBar({ message, action }: ThreadActionBarProps) {
   );
 }
 
-type ThreadCompleteSummaryProps = {
-  attempts: PracticeAttempt[];
-  maxMarks: number;
+type ThreadLoadingStateProps = {
+  nextThreadNumber: number;
 };
 
-function ThreadCompleteSummary({
-  attempts,
-  maxMarks,
-}: ThreadCompleteSummaryProps) {
-  const firstAttempt = attempts[0];
-  const finalAttempt = attempts[attempts.length - 1];
-  const scoreDelta =
-    finalAttempt.feedback.awardedMarks - firstAttempt.feedback.awardedMarks;
-  const deltaLabel =
-    scoreDelta > 0
-      ? `Up ${scoreDelta} mark${scoreDelta === 1 ? "" : "s"}`
-      : scoreDelta < 0
-        ? `Down ${Math.abs(scoreDelta)} mark${
-            Math.abs(scoreDelta) === 1 ? "" : "s"
-          }`
-        : "Score unchanged";
-
+function ThreadLoadingState({ nextThreadNumber }: ThreadLoadingStateProps) {
   return (
-    <section className="flex justify-start border-t border-slate-200/80 pt-5 dark:border-slate-800/80">
-      <div className="max-w-xl rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-wrap items-center gap-3">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700 dark:text-sky-200">
-            Thread complete
-          </p>
-          <span className="text-sm text-slate-500 dark:text-slate-400">
-            {deltaLabel}
-          </span>
-        </div>
+    <section className="rounded-[24px] border border-dashed border-slate-300 bg-white/70 px-5 py-5 dark:border-slate-700 dark:bg-slate-900/50">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
+          Question {nextThreadNumber}
+        </span>
+        <span className="text-sm text-slate-500 dark:text-slate-400">
+          Generating the next thread...
+        </span>
+      </div>
+      <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
+        Completed work stays above while the next practice question is prepared.
+      </p>
+    </section>
+  );
+}
 
-        <p className="mt-2 text-sm leading-6 text-slate-700 dark:text-slate-300">
-          Final score:{" "}
-          <span className="font-semibold text-slate-950 dark:text-white">
-            {finalAttempt.feedback.awardedMarks}/{maxMarks}
-          </span>
-          . You can move on to the next question whenever you are ready.
-        </p>
+type ThreadGenerationErrorProps = {
+  message: string;
+  onRetry: () => void;
+};
+
+function ThreadGenerationError({
+  message,
+  onRetry,
+}: ThreadGenerationErrorProps) {
+  return (
+    <section className="rounded-[24px] border border-amber-300 bg-amber-50 px-5 py-5 dark:border-amber-500/40 dark:bg-amber-500/10">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-800 dark:text-amber-200">
+        Next question paused
+      </p>
+      <p className="mt-3 text-sm leading-6 text-amber-900 dark:text-amber-100">
+        {message}
+      </p>
+      <div className="mt-4">
+        <button className={primaryButtonClass} onClick={onRetry} type="button">
+          Retry generation
+        </button>
+      </div>
+    </section>
+  );
+}
+
+type SessionCompleteSummaryProps = {
+  completedQuestionCount: number;
+  sessionLength: PracticeSessionLength;
+  onResetSession: () => void;
+};
+
+function SessionCompleteSummary({
+  completedQuestionCount,
+  sessionLength,
+  onResetSession,
+}: SessionCompleteSummaryProps) {
+  return (
+    <section className="rounded-[28px] border border-emerald-200 bg-emerald-50/80 px-5 py-6 shadow-sm dark:border-emerald-500/25 dark:bg-emerald-500/10">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-800 dark:text-emerald-200">
+        Session complete
+      </p>
+      <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">
+        You completed {completedQuestionCount} of {sessionLength} questions.
+      </h2>
+      <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-700 dark:text-slate-200">
+        The finished threads above remain as a record of the full session. Reset
+        when you want to start a fresh run with a new question sequence.
+      </p>
+      <div className="mt-5">
+        <button
+          className={secondaryButtonClass}
+          onClick={onResetSession}
+          type="button"
+        >
+          Start a new session
+        </button>
       </div>
     </section>
   );
@@ -708,7 +997,7 @@ function ThreadBlock({
   const surfaceClass =
     tone === "answer"
       ? "max-w-[84%] rounded-[28px] bg-slate-950 px-5 py-4 text-white shadow-sm dark:bg-slate-800 dark:text-slate-100 sm:max-w-[76%]"
-      : "max-w-[90%] rounded-[28px] bg-slate-100 px-5 py-4 text-slate-800 shadow-sm dark:bg-slate-900 dark:text-slate-100 sm:max-w-[82%]";
+      : "max-w-[90%] rounded-[28px] bg-slate-100 px-5 py-4 text-slate-800 shadow-sm dark:bg-slate-950 dark:text-slate-100 sm:max-w-[82%]";
   const captionClass =
     tone === "answer"
       ? "text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300 dark:text-slate-400"
@@ -777,19 +1066,141 @@ function MobileSessionDrawer({
   );
 }
 
-function getPrimaryActionLabel(
-  stage: PracticeStage,
-  currentQuestion: PracticeQuestion | null,
-) {
-  if (stage === "feedback" || stage === "improving") {
-    return "Next question";
+function getActiveThread(threads: SessionThread[]) {
+  const lastThread = threads[threads.length - 1] ?? null;
+
+  if (!lastThread || lastThread.stage === "complete") {
+    return null;
   }
 
-  if (currentQuestion) {
-    return "Generate new question";
+  return lastThread;
+}
+
+function createSessionThread(
+  question: GenerateQuestionResponse,
+  threadNumber: number,
+): SessionThread {
+  return {
+    threadId: `${question.questionId}-${threadNumber}`,
+    question,
+    attempts: [],
+    stage: "question",
+  };
+}
+
+function getPrimaryActionLabel(threadCount: number, hasActiveThread: boolean) {
+  if (threadCount > 0 && !hasActiveThread) {
+    return "Generate next question";
   }
 
   return "Generate question";
+}
+
+function updateActiveThread(
+  threads: SessionThread[],
+  updater: (thread: SessionThread) => SessionThread,
+) {
+  const nextThreads = [...threads];
+  const lastIndex = nextThreads.length - 1;
+
+  if (lastIndex < 0 || nextThreads[lastIndex].stage === "complete") {
+    return threads;
+  }
+
+  nextThreads[lastIndex] = updater(nextThreads[lastIndex]);
+
+  return nextThreads;
+}
+
+function getCommandWordLabel(
+  questionType: GenerateQuestionResponse["questionType"],
+) {
+  return questionType
+    .split(/[-\s]+/)
+    .filter(Boolean)
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function getImprovementLabel(
+  firstAttempt: PracticeAttempt,
+  finalAttempt: PracticeAttempt,
+) {
+  const scoreDelta =
+    finalAttempt.feedback.estimatedMark - firstAttempt.feedback.estimatedMark;
+
+  if (scoreDelta > 0) {
+    return `Improvement: +${scoreDelta} mark${scoreDelta === 1 ? "" : "s"}`;
+  }
+
+  if (scoreDelta < 0) {
+    return `Improvement: -${Math.abs(scoreDelta)} mark${
+      Math.abs(scoreDelta) === 1 ? "" : "s"
+    }`;
+  }
+
+  return "Improvement: score unchanged";
+}
+
+async function readResponseBody(response: Response) {
+  return (await response.json().catch(() => null)) as unknown;
+}
+
+function getApiErrorMessage(body: unknown, fallback: string) {
+  return isApiErrorResponse(body) ? body.error : fallback;
+}
+
+function isApiErrorResponse(body: unknown): body is ApiErrorResponse {
+  return isRecord(body) && "error" in body && typeof body.error === "string";
+}
+
+function isGenerateQuestionResponse(
+  body: unknown,
+): body is GenerateQuestionResponse {
+  return (
+    isRecord(body) &&
+    typeof body.questionId === "string" &&
+    typeof body.questionText === "string" &&
+    typeof body.marks === "number" &&
+    isPracticeQuestionCommandWord(body.questionType) &&
+    typeof body.topicId === "string" &&
+    typeof body.topicLabel === "string" &&
+    typeof body.subtopicId === "string" &&
+    typeof body.subtopicLabel === "string" &&
+    typeof body.answerFocus === "string" &&
+    Array.isArray(body.rubricPoints) &&
+    body.rubricPoints.every((point) => {
+      return (
+        isRecord(point) &&
+        typeof point.id === "number" &&
+        typeof point.pointText === "string" &&
+        typeof point.orderNumber === "number"
+      );
+    })
+  );
+}
+
+function isMarkAnswerResponse(body: unknown): body is MarkAnswerResponse {
+  return (
+    isRecord(body) &&
+    typeof body.questionId === "string" &&
+    typeof body.estimatedMark === "number" &&
+    typeof body.maxMarks === "number" &&
+    typeof body.topicId === "string" &&
+    typeof body.topicLabel === "string" &&
+    typeof body.subtopicId === "string" &&
+    typeof body.subtopicLabel === "string" &&
+    Array.isArray(body.whatWasGood) &&
+    body.whatWasGood.every((item) => typeof item === "string") &&
+    Array.isArray(body.missingPoints) &&
+    body.missingPoints.every((item) => typeof item === "string") &&
+    typeof body.improvementAdvice === "string" &&
+    (body.attemptNumber === 1 || body.attemptNumber === 2)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function PanelExpandIcon({ className }: { className?: string }) {

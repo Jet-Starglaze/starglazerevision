@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import type {
   PracticeModule,
   PracticeSubtopic,
@@ -10,14 +10,14 @@ import type {
 type PracticeSidebarProps = {
   subjectName: string;
   modules: PracticeModule[];
-  selectedSubtopicIdSet: Set<string>;
-  expandedModuleIds: string[];
-  expandedTopicIds: string[];
-  onToggleExpandedModule: (moduleId: string) => void;
-  onToggleExpandedTopic: (topicId: string) => void;
-  onToggleModuleSelection: (module: PracticeModule) => void;
-  onToggleTopicSelection: (topic: PracticeTopic) => void;
-  onToggleSubtopicSelection: (subtopicId: string) => void;
+  selectedSubtopicIds: ReadonlySet<number>;
+  expandedModuleIds: number[];
+  expandedTopicIds: number[];
+  onToggleExpandedModule: (moduleId: number) => void;
+  onToggleExpandedTopic: (topicId: number) => void;
+  onToggleModuleSelection: (moduleId: number) => void;
+  onToggleTopicSelection: (topicId: number) => void;
+  onToggleSubtopicSelection: (subtopicId: number) => void;
   onClearSelection: () => void;
   className?: string;
   onClose?: () => void;
@@ -31,7 +31,7 @@ const panelClassName =
 export default function PracticeSidebar({
   subjectName,
   modules,
-  selectedSubtopicIdSet,
+  selectedSubtopicIds,
   expandedModuleIds,
   expandedTopicIds,
   onToggleExpandedModule,
@@ -74,7 +74,7 @@ export default function PracticeSidebar({
 
         <div className="mt-3 flex items-center justify-between gap-3 border-b border-slate-200 px-4 pb-3 text-sm dark:border-slate-800">
           <span className="text-slate-500 dark:text-slate-400">
-            {selectedSubtopicIdSet.size} selected
+            {selectedSubtopicIds.size} selected
           </span>
           <button
             className="font-semibold text-slate-700 transition hover:text-sky-700 dark:text-slate-200 dark:hover:text-sky-200"
@@ -91,7 +91,7 @@ export default function PracticeSidebar({
               const moduleSubtopicIds = getModuleSubtopicIds(module);
               const moduleSelectionState = getSelectionState(
                 moduleSubtopicIds,
-                selectedSubtopicIdSet,
+                selectedSubtopicIds,
               );
               const isModuleExpanded = expandedModuleIds.includes(module.id);
 
@@ -104,7 +104,7 @@ export default function PracticeSidebar({
                   isFirst={index === 0}
                   module={module}
                   onToggleExpand={() => onToggleExpandedModule(module.id)}
-                  onToggleSelection={() => onToggleModuleSelection(module)}
+                  onToggleSelection={() => onToggleModuleSelection(module.id)}
                 >
                   {isModuleExpanded ? (
                     <div className="ml-2 mt-2 space-y-1 border-l border-slate-200 pl-2 dark:border-slate-800">
@@ -112,7 +112,7 @@ export default function PracticeSidebar({
                         const topicSubtopicIds = getTopicSubtopicIds(topic);
                         const topicSelectionState = getSelectionState(
                           topicSubtopicIds,
-                          selectedSubtopicIdSet,
+                          selectedSubtopicIds,
                         );
                         const isTopicExpanded = expandedTopicIds.includes(
                           topic.id,
@@ -128,7 +128,7 @@ export default function PracticeSidebar({
                               onToggleExpandedTopic(topic.id)
                             }
                             onToggleSelection={() =>
-                              onToggleTopicSelection(topic)
+                              onToggleTopicSelection(topic.id)
                             }
                             topic={topic}
                           >
@@ -137,7 +137,7 @@ export default function PracticeSidebar({
                                 {topic.subtopics.map((subtopic) => (
                                   <SubtopicItem
                                     key={subtopic.id}
-                                    checked={selectedSubtopicIdSet.has(
+                                    checked={selectedSubtopicIds.has(
                                       subtopic.id,
                                     )}
                                     onToggle={() =>
@@ -346,27 +346,40 @@ function StyledCheckbox({
   label,
   onToggle,
 }: StyledCheckboxProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
   const isActive = checked || indeterminate;
 
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.indeterminate = indeterminate;
+    }
+  }, [indeterminate]);
+
   return (
-    <button
-      aria-checked={indeterminate ? "mixed" : checked}
-      aria-label={label}
-      className={`mt-1 inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-md border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/70 ${
-        isActive
-          ? "border-sky-500 bg-sky-600 text-white shadow-sm dark:border-sky-400 dark:bg-sky-500"
-          : "border-slate-300 bg-slate-100 text-transparent hover:border-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:hover:border-slate-500"
-      }`}
-      onClick={onToggle}
-      role="checkbox"
-      type="button"
-    >
-      {indeterminate ? (
-        <MinusIcon className="h-3 w-3" />
-      ) : checked ? (
-        <CheckIcon className="h-3 w-3" />
-      ) : null}
-    </button>
+    <label className="mt-1 inline-flex shrink-0 cursor-pointer">
+      <input
+        ref={inputRef}
+        aria-label={label}
+        checked={checked}
+        className="peer sr-only"
+        onChange={onToggle}
+        type="checkbox"
+      />
+      <span
+        aria-hidden="true"
+        className={`inline-flex h-[18px] w-[18px] items-center justify-center rounded-md border transition peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500/70 ${
+          isActive
+            ? "border-sky-500 bg-sky-600 text-white shadow-sm dark:border-sky-400 dark:bg-sky-500"
+            : "border-slate-300 bg-slate-100 text-transparent hover:border-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:hover:border-slate-500"
+        }`}
+      >
+        {indeterminate ? (
+          <MinusIcon className="h-3 w-3" />
+        ) : checked ? (
+          <CheckIcon className="h-3 w-3" />
+        ) : null}
+      </span>
+    </label>
   );
 }
 
@@ -378,8 +391,13 @@ function getModuleSubtopicIds(module: PracticeModule) {
   return module.topics.flatMap((topic) => getTopicSubtopicIds(topic));
 }
 
-function getSelectionState(selectedIds: string[], selectedIdSet: Set<string>) {
-  const selectedCount = selectedIds.filter((id) => selectedIdSet.has(id)).length;
+function getSelectionState(
+  selectedIds: number[],
+  selectedSubtopicIds: ReadonlySet<number>,
+) {
+  const selectedCount = selectedIds.filter((id) =>
+    selectedSubtopicIds.has(id),
+  ).length;
 
   return {
     checked: selectedIds.length > 0 && selectedCount === selectedIds.length,

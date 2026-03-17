@@ -1,10 +1,11 @@
+import type { PracticeModule, PracticeSubtopic, PracticeTopic } from "@/lib/mock-biology-practice";
 import { createClient } from "@/utils/supabase/server";
 
 type SubjectsClient = Awaited<ReturnType<typeof createClient>>;
 type MaybeEmbedded<T> = T | T[] | null;
 
 type SubjectRow = {
-  id: number;
+  id: number | string;
   name: string;
   slug: string;
   exam_board: string;
@@ -12,24 +13,24 @@ type SubjectRow = {
 };
 
 type ModuleRow = {
-  id: number;
-  subject_id: number;
+  id: number | string;
+  subject_id: number | string;
   name: string;
   slug: string;
   order_number: number;
 };
 
 type TopicRow = {
-  id: number;
-  module_id: number;
+  id: number | string;
+  module_id: number | string;
   name: string;
   slug: string;
   order_number: number;
 };
 
 type SubtopicRow = {
-  id: number;
-  topic_id: number;
+  id: number | string;
+  topic_id: number | string;
   code: string;
   name: string;
   slug: string;
@@ -40,7 +41,7 @@ type SubtopicRow = {
 };
 
 type SubtopicDetailFields = {
-  id: number;
+  id: number | string;
   code: string;
   name: string;
   slug: string;
@@ -74,6 +75,18 @@ type SubtopicContextTopicRow = TopicRow & {
 
 type SubtopicPageRawRow = SubtopicDetailFields & {
   topics: MaybeEmbedded<SubtopicContextTopicRow>;
+};
+
+type PracticeTopicTreeRow = TopicRow & {
+  subtopics: SubtopicRow[] | null;
+};
+
+type PracticeModuleTreeRow = ModuleRow & {
+  topics: PracticeTopicTreeRow[] | null;
+};
+
+type PracticeSubjectTreeRawRow = SubjectRow & {
+  modules: PracticeModuleTreeRow[] | null;
 };
 
 export type SubjectSummary = {
@@ -139,7 +152,7 @@ export type SubtopicPageData = {
 
 function mapSubject(row: SubjectRow): SubjectSummary {
   return {
-    id: row.id,
+    id: toNumericId(row.id),
     name: row.name,
     slug: row.slug,
     examBoard: row.exam_board,
@@ -149,7 +162,7 @@ function mapSubject(row: SubjectRow): SubjectSummary {
 
 function mapModule(row: ModuleRow): ModuleSummary {
   return {
-    id: row.id,
+    id: toNumericId(row.id),
     name: row.name,
     slug: row.slug,
     orderNumber: row.order_number,
@@ -158,7 +171,7 @@ function mapModule(row: ModuleRow): ModuleSummary {
 
 function mapTopic(row: TopicRow): TopicSummary {
   return {
-    id: row.id,
+    id: toNumericId(row.id),
     name: row.name,
     slug: row.slug,
     orderNumber: row.order_number,
@@ -167,7 +180,7 @@ function mapTopic(row: TopicRow): TopicSummary {
 
 function mapSubtopicSummary(row: SubtopicRow): SubtopicSummary {
   return {
-    id: row.id,
+    id: toNumericId(row.id),
     code: row.code,
     name: row.name,
     slug: row.slug,
@@ -178,7 +191,7 @@ function mapSubtopicSummary(row: SubtopicRow): SubtopicSummary {
 
 function mapSubtopicDetail(row: SubtopicDetailFields): SubtopicDetail {
   return {
-    id: row.id,
+    id: toNumericId(row.id),
     code: row.code,
     name: row.name,
     slug: row.slug,
@@ -186,6 +199,34 @@ function mapSubtopicDetail(row: SubtopicDetailFields): SubtopicDetail {
     summary: row.summary,
     keyTerms: row.key_terms ?? [],
     examTips: row.exam_tips ?? [],
+  };
+}
+
+function mapPracticeSubtopic(row: SubtopicRow): PracticeSubtopic {
+  return {
+    id: toNumericId(row.id),
+    slug: row.slug,
+    code: row.code,
+    name: row.name,
+  };
+}
+
+function mapPracticeTopic(row: PracticeTopicTreeRow): PracticeTopic {
+  return {
+    id: toNumericId(row.id),
+    slug: row.slug,
+    name: row.name,
+    subtopics: sortByOrderNumber(row.subtopics).map(mapPracticeSubtopic),
+  };
+}
+
+function mapPracticeModule(row: PracticeModuleTreeRow): PracticeModule {
+  return {
+    id: toNumericId(row.id),
+    slug: row.slug,
+    label: row.name,
+    name: row.name,
+    topics: sortByOrderNumber(row.topics).map(mapPracticeTopic),
   };
 }
 
@@ -213,6 +254,20 @@ function sortByOrderNumber<T extends { order_number: number }>(
   return [...(value ?? [])].sort((left, right) => {
     return left.order_number - right.order_number;
   });
+}
+
+function toNumericId(value: number | string) {
+  if (typeof value === "number") {
+    return value;
+  }
+
+  const parsedValue = Number(value);
+
+  if (!Number.isInteger(parsedValue) || parsedValue <= 0) {
+    throw new Error(`Invalid numeric identifier "${value}"`);
+  }
+
+  return parsedValue;
 }
 
 export async function getSubjects(client?: SubjectsClient) {
@@ -265,6 +320,61 @@ export async function getSubjectPageData(
     subject: mapSubject(row),
     modules: sortByOrderNumber(row.modules).map(mapModule),
   };
+}
+
+export async function getPracticeSyllabusData(
+  subjectSlug: string,
+  client?: SubjectsClient,
+): Promise<PracticeModule[]> {
+  const supabase = await resolveClient(client);
+  const { data, error } = await supabase
+    .from("subjects")
+    .select(
+      `
+        id,
+        name,
+        slug,
+        exam_board,
+        qualification,
+        modules (
+          id,
+          subject_id,
+          name,
+          slug,
+          order_number,
+          topics (
+            id,
+            module_id,
+            name,
+            slug,
+            order_number,
+            subtopics (
+              id,
+              topic_id,
+              code,
+              name,
+              slug,
+              order_number,
+              summary,
+              key_terms,
+              exam_tips
+            )
+          )
+        )
+      `,
+    )
+    .eq("slug", subjectSlug)
+    .maybeSingle();
+
+  assertNoError(error, `Failed to load practice syllabus for "${subjectSlug}"`);
+
+  if (!data) {
+    return [];
+  }
+
+  const row = data as unknown as PracticeSubjectTreeRawRow;
+
+  return sortByOrderNumber(row.modules).map(mapPracticeModule);
 }
 
 export async function getModulePageData(

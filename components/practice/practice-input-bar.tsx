@@ -6,6 +6,7 @@ type PracticeInputBarProps = {
   onSubmit: () => void;
   readOnly?: boolean;
   submitDisabled?: boolean;
+  submitLabel?: string;
 };
 
 export default function PracticeInputBar({
@@ -14,6 +15,7 @@ export default function PracticeInputBar({
   onSubmit,
   readOnly = false,
   submitDisabled = false,
+  submitLabel = "Submit",
 }: PracticeInputBarProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isDisabled = readOnly || submitDisabled;
@@ -67,7 +69,7 @@ export default function PracticeInputBar({
           onClick={onSubmit}
           type="button"
         >
-          Submit
+          {submitLabel}
         </button>
       </div>
     </div>

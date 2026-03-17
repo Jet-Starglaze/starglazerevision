@@ -1,13 +1,13 @@
 "use client";
 
 import type {
-  PracticeQuestion,
-  PracticeQuestionType,
+  PracticeQuestionFilterMode,
   PracticeSessionLength,
 } from "@/lib/mock-biology-practice";
+import type { GenerateQuestionResponse } from "@/lib/mock-biology-practice-api";
 
 type SessionSelectedSubtopic = {
-  id: string;
+  id: number;
   name: string;
   code: string;
   moduleLabel: string;
@@ -17,18 +17,21 @@ type SessionSelectedSubtopic = {
 
 type PracticeSessionPanelProps = {
   selectedSubtopics: SessionSelectedSubtopic[];
-  questionType: PracticeQuestionType;
+  questionFilterMode: PracticeQuestionFilterMode;
   sessionLength: PracticeSessionLength;
   progressLabel: string;
   progressMessage: string;
   generateButtonLabel: string;
-  showNoEligibleMessage: boolean;
+  generationError: string | null;
+  isGeneratingQuestion: boolean;
   isSessionComplete: boolean;
   canReset: boolean;
-  currentQuestion: PracticeQuestion | null;
+  currentQuestion: GenerateQuestionResponse | null;
   answerDraft: string;
   isDeemphasized?: boolean;
-  onQuestionTypeChange: (questionType: PracticeQuestionType) => void;
+  onQuestionFilterModeChange: (
+    questionFilterMode: PracticeQuestionFilterMode,
+  ) => void;
   onSessionLengthChange: (sessionLength: PracticeSessionLength) => void;
   onGenerateQuestion: () => void;
   onResetSession: () => void;
@@ -39,25 +42,25 @@ type PracticeSessionPanelProps = {
 const primaryButtonClass =
   "inline-flex min-h-11 items-center justify-center rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 dark:bg-sky-600 dark:hover:bg-sky-500 dark:disabled:bg-slate-800 dark:disabled:text-slate-500";
 
-const questionTypeOptions: Array<{
-  value: PracticeQuestionType;
+const questionFilterModeOptions: Array<{
+  value: PracticeQuestionFilterMode;
   label: string;
   description: string;
 }> = [
   {
     value: "mixed",
     label: "Mixed",
-    description: "Rotate through short and extended exam questions.",
+    description: "Use any saved question regardless of command word or marks.",
   },
   {
-    value: "six-mark",
+    value: "six-mark-only",
     label: "6-mark only",
-    description: "Stay on concise extended responses.",
+    description: "Limit the generator to questions worth exactly 6 marks.",
   },
   {
     value: "long-answer",
     label: "Long-answer only",
-    description: "Focus on deeper written explanations.",
+    description: "Treat longer written questions as anything worth 3+ marks.",
   },
 ];
 
@@ -65,18 +68,19 @@ const sessionLengthOptions: PracticeSessionLength[] = [5, 10, 20];
 
 export default function PracticeSessionPanel({
   selectedSubtopics,
-  questionType,
+  questionFilterMode,
   sessionLength,
   progressLabel,
   progressMessage,
   generateButtonLabel,
-  showNoEligibleMessage,
+  generationError,
+  isGeneratingQuestion,
   isSessionComplete,
   canReset,
   currentQuestion,
   answerDraft,
   isDeemphasized = false,
-  onQuestionTypeChange,
+  onQuestionFilterModeChange,
   onSessionLengthChange,
   onGenerateQuestion,
   onResetSession,
@@ -88,7 +92,11 @@ export default function PracticeSessionPanel({
     selectedSubtopics.length - visibleTopics.length,
     0,
   );
-  const canGenerate = selectedSubtopics.length > 0;
+  const canGenerate =
+    selectedSubtopics.length > 0 &&
+    !isGeneratingQuestion &&
+    currentQuestion === null &&
+    !isSessionComplete;
   const shouldShowDraftNotice =
     currentQuestion !== null && answerDraft.trim().length > 0;
   const shellClassName = isDeemphasized
@@ -198,11 +206,11 @@ export default function PracticeSessionPanel({
 
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-              Question type
+              Question filter
             </h3>
             <div className="space-y-2">
-              {questionTypeOptions.map((option) => {
-                const isActive = option.value === questionType;
+              {questionFilterModeOptions.map((option) => {
+                const isActive = option.value === questionFilterMode;
 
                 return (
                   <button
@@ -213,7 +221,7 @@ export default function PracticeSessionPanel({
                         : "border-slate-200 bg-slate-50 text-slate-700 hover:border-sky-300 hover:text-sky-700 dark:border-slate-800 dark:bg-slate-900/50 dark:text-slate-300 dark:hover:border-sky-500 dark:hover:text-sky-200"
                     }`}
                     key={option.value}
-                    onClick={() => onQuestionTypeChange(option.value)}
+                    onClick={() => onQuestionFilterModeChange(option.value)}
                     type="button"
                   >
                     <p className="text-sm font-semibold">{option.label}</p>
@@ -253,10 +261,9 @@ export default function PracticeSessionPanel({
             </div>
           </section>
 
-          {showNoEligibleMessage ? (
+          {generationError ? (
             <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
-              No mock questions match this topic selection and question type
-              yet. Try a different question type or choose different subtopics.
+              {generationError}
             </div>
           ) : null}
 
@@ -276,7 +283,7 @@ export default function PracticeSessionPanel({
               onClick={onGenerateQuestion}
               type="button"
             >
-              {generateButtonLabel}
+              {isGeneratingQuestion ? "Generating..." : generateButtonLabel}
             </button>
 
             <button

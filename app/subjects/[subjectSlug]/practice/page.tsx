@@ -2,11 +2,8 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import Breadcrumbs from "@/components/breadcrumbs";
 import PracticeWorkspace from "@/components/practice-workspace";
-import {
-  BIOLOGY_PRACTICE_SUBJECT_SLUG,
-  biologyPracticeSyllabus,
-} from "@/lib/mock-biology-practice";
-import { getSubjectPageData } from "@/lib/subjects";
+import { BIOLOGY_PRACTICE_SUBJECT_SLUG } from "@/lib/mock-biology-practice";
+import { getPracticeSyllabusData, getSubjectPageData } from "@/lib/subjects";
 import { createClient } from "@/utils/supabase/server";
 
 type PracticePageProps = {
@@ -42,10 +39,12 @@ export default async function PracticePage({ params }: PracticePageProps) {
     data.subject.slug === BIOLOGY_PRACTICE_SUBJECT_SLUG;
 
   if (isSupportedSubject) {
+    const practiceModules = await getPracticeSyllabusData(subjectSlug, supabase);
+
     return (
       <div className="relative left-1/2 -my-8 w-screen -translate-x-1/2">
         <PracticeWorkspace
-          modules={biologyPracticeSyllabus}
+          modules={practiceModules}
           subjectName={data.subject.name}
           subjectSlug={data.subject.slug}
         />
