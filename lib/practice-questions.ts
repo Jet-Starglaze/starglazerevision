@@ -12,6 +12,14 @@ import type {
   ApiErrorResponse,
   GenerateQuestionResponse,
 } from "@/lib/mock-biology-practice-api";
+import {
+  fetchGeneratedLevelDescriptors,
+  fetchGeneratedRubricPoints,
+  mapDatabaseMarkingStyle,
+  toNumericId,
+  type GeneratedQuestionRecord,
+  type SupabaseServerClient,
+} from "@/lib/generated-practice-content";
 import { createClient } from "@/utils/supabase/server";
 
 type PracticeQuestionApiResult<T> = {
@@ -20,12 +28,6 @@ type PracticeQuestionApiResult<T> = {
 };
 
 type MaybeEmbedded<T> = T | T[] | null;
-
-type RubricPointRow = {
-  id: number | string;
-  point_text: string;
-  order_number: number;
-};
 
 type QuestionTopicRow = {
   id: number | string;
@@ -38,18 +40,11 @@ type QuestionSubtopicRow = {
   topics: MaybeEmbedded<QuestionTopicRow>;
 };
 
-type QuestionRow = {
-  id: number | string;
-  subtopic_id: number | string;
-  question_text: string;
-  marks: number;
-  question_type: string;
-  answer_focus: string | null;
-  rubric_points: RubricPointRow[] | null;
-  subtopics: MaybeEmbedded<QuestionSubtopicRow>;
-};
-
 const practiceSessionLengths = [5, 10, 20] as const;
+const noApprovedQuestionsMessage =
+  "No approved questions are available yet for the selected subtopics.";
+const questionLoadErrorMessage =
+  "Could not load a generated question right now.";
 const legacyQuestionTypeValues = new Set([
   "6-mark",
   "six-mark",
@@ -115,9 +110,11 @@ export async function fetchPracticeQuestionFromSupabase(
     );
   }
 
+  const uniqueSubtopicIds = uniqueIntegers(normalizedSubtopicIds);
   const supabase = await createClient();
-  let query = supabase
-    .from("questions")
+
+  let questionQuery = supabase
+    .from("generated_questions")
     .select(
       `
         id,
@@ -126,87 +123,84 @@ export async function fetchPracticeQuestionFromSupabase(
         marks,
         question_type,
         answer_focus,
-        rubric_points (
-          id,
-          point_text,
-          order_number
-        ),
-        subtopics!inner (
-          id,
-          name,
-          topics!inner (
-            id,
-            name
-          )
-        )
+        marking_style
       `,
     )
-    .in("subtopic_id", uniqueIntegers(normalizedSubtopicIds))
+    .eq("status", "approved")
+    .in("subtopic_id", uniqueSubtopicIds)
     .order("id", { ascending: true });
 
   if (questionFilterMode === "six-mark-only") {
-    query = query.eq("marks", 6);
+    questionQuery = questionQuery.eq("marks", 6);
   } else if (questionFilterMode === "long-answer") {
-    query = query.gte("marks", 3);
+    questionQuery = questionQuery.gte("marks", 3);
   }
 
-  const { data, error } = await query;
+  const { data, error } = await questionQuery;
 
   if (error) {
-    console.error("[api/generate-question] Failed to load questions", {
+    console.error("[api/generate-question] Failed to load generated questions", {
       subjectId,
-      selectedSubtopicIds: normalizedSubtopicIds,
+      selectedSubtopicIds: uniqueSubtopicIds,
       questionFilterMode,
       message: error.message,
     });
 
-    return createErrorResult(500, "Could not load a saved question right now.");
+    return createErrorResult(500, questionLoadErrorMessage);
   }
 
-  const questionRows = (data ?? []) as QuestionRow[];
+  const questionRows = (data ?? []) as GeneratedQuestionRecord[];
 
   if (questionRows.length === 0) {
-    return createErrorResult(
-      404,
-      "No saved questions found yet for the selected subtopics.",
-    );
+    return createErrorResult(404, noApprovedQuestionsMessage);
   }
 
-  const eligibleQuestions = questionRows
-    .map(mapQuestionRow)
-    .filter((question): question is GenerateQuestionResponse => question !== null);
+  const nextQuestionRow =
+    questionRows[(questionCursor ?? 0) % questionRows.length] ?? null;
 
-  if (eligibleQuestions.length === 0) {
-    console.error(
-      "[api/generate-question] Loaded questions could not be mapped",
-      {
-        subjectId,
-        selectedSubtopicIds: normalizedSubtopicIds,
-        questionFilterMode,
-        questionCount: questionRows.length,
-      },
-    );
-
-    return createErrorResult(500, "Could not load a saved question right now.");
+  if (!nextQuestionRow) {
+    return createErrorResult(404, noApprovedQuestionsMessage);
   }
 
-  const nextQuestion =
-    eligibleQuestions[(questionCursor ?? 0) % eligibleQuestions.length] ?? null;
-
-  if (!nextQuestion) {
-    return createErrorResult(
-      404,
-      "No saved questions found yet for the selected subtopics.",
+  try {
+    const nextQuestion = await buildGeneratedQuestionResponse(
+      nextQuestionRow,
+      supabase,
     );
-  }
 
-  return {
-    status: 200,
-    body: nextQuestion,
-  };
+    if (!nextQuestion) {
+      console.error(
+        "[api/generate-question] Generated question could not be mapped",
+        {
+          subjectId,
+          questionId: String(nextQuestionRow.id),
+          subtopicId: String(nextQuestionRow.subtopic_id),
+        },
+      );
+
+      return createErrorResult(500, questionLoadErrorMessage);
+    }
+
+    return {
+      status: 200,
+      body: nextQuestion,
+    };
+  } catch (caughtError) {
+    console.error("[api/generate-question] Failed to build generated question", {
+      subjectId,
+      questionId: String(nextQuestionRow.id),
+      message:
+        caughtError instanceof Error ? caughtError.message : String(caughtError),
+    });
+
+    return createErrorResult(500, questionLoadErrorMessage);
+  }
 }
 
-function mapQuestionRow(row: QuestionRow): GenerateQuestionResponse | null {
+async function buildGeneratedQuestionResponse(
+  row: GeneratedQuestionRecord,
+  supabase: SupabaseServerClient,
+): Promise<GenerateQuestionResponse | null> {
   const normalizedQuestionType = mapDatabaseQuestionType(
     row.question_type,
     row.question_text,
@@ -217,18 +211,24 @@ function mapQuestionRow(row: QuestionRow): GenerateQuestionResponse | null {
     return null;
   }
 
-  const subtopicRow = takeFirst(row.subtopics);
+  const markingStyle = mapDatabaseMarkingStyle(row.marking_style, row.id);
+
+  if (!markingStyle) {
+    return null;
+  }
+
+  const subtopicRow = await fetchSubtopicContext(supabase, row.subtopic_id);
   const topicRow = takeFirst(subtopicRow?.topics);
 
   if (!subtopicRow || !topicRow) {
     return null;
   }
 
-  const rubricPoints = sortRubricPoints(row.rubric_points).map((point) => ({
-    id: toNumericId(point.id),
-    pointText: point.point_text,
-    orderNumber: point.order_number,
-  }));
+  const rubricPoints = await fetchGeneratedRubricPoints(supabase, row.id);
+  const levelDescriptors =
+    markingStyle === "levels"
+      ? await fetchGeneratedLevelDescriptors(supabase, row.id)
+      : [];
 
   return {
     questionId: String(toNumericId(row.id)),
@@ -240,8 +240,36 @@ function mapQuestionRow(row: QuestionRow): GenerateQuestionResponse | null {
     subtopicId: String(toNumericId(subtopicRow.id)),
     subtopicLabel: subtopicRow.name,
     answerFocus: row.answer_focus ?? "",
+    markingStyle,
     rubricPoints,
+    levelDescriptors,
   };
+}
+
+async function fetchSubtopicContext(
+  supabase: SupabaseServerClient,
+  subtopicId: number | string,
+) {
+  const { data, error } = await supabase
+    .from("subtopics")
+    .select(
+      `
+        id,
+        name,
+        topics!inner (
+          id,
+          name
+        )
+      `,
+    )
+    .eq("id", toNumericId(subtopicId))
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to load subtopic context: ${error.message}`);
+  }
+
+  return (data ?? null) as QuestionSubtopicRow | null;
 }
 
 function mapDatabaseQuestionType(
@@ -292,12 +320,6 @@ function takeFirst<T>(value: MaybeEmbedded<T> | undefined): T | null {
   }
 
   return value ?? null;
-}
-
-function sortRubricPoints(value: RubricPointRow[] | null | undefined) {
-  return [...(value ?? [])].sort((left, right) => {
-    return left.order_number - right.order_number;
-  });
 }
 
 function uniqueIntegers(value: number[]) {
@@ -372,18 +394,4 @@ function normalizeNumericId(value: unknown) {
   }
 
   return null;
-}
-
-function toNumericId(value: number | string) {
-  if (typeof value === "number") {
-    return value;
-  }
-
-  const parsedValue = Number(value);
-
-  if (!isPositiveInteger(parsedValue)) {
-    throw new Error(`Invalid numeric identifier "${value}"`);
-  }
-
-  return parsedValue;
 }

@@ -38,7 +38,7 @@ type PracticeWorkspaceShellProps = {
 type ThreadStage = "question" | "feedback" | "improving" | "complete";
 
 type PracticeAttempt = {
-  attemptNumber: 1 | 2;
+  attemptNumber: number;
   answer: string;
   feedback: MarkAnswerResponse;
 };
@@ -48,6 +48,7 @@ type SessionThread = {
   question: GenerateQuestionResponse;
   attempts: PracticeAttempt[];
   stage: ThreadStage;
+  isCollapsed: boolean;
 };
 
 const primaryButtonClass =
@@ -246,8 +247,7 @@ export default function PracticeWorkspaceShell({
       return;
     }
 
-    const nextAttemptNumber: 1 | 2 =
-      activeThread.stage === "improving" ? 2 : 1;
+    const nextAttemptNumber = getNextAttemptNumber(activeThread);
     const requestToken = sessionRequestTokenRef.current;
 
     setAnswerError(null);
@@ -261,7 +261,7 @@ export default function PracticeWorkspaceShell({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          ...activeThread.question,
+          generatedQuestionId: Number(activeThread.question.questionId),
           answerText: trimmedAnswer,
           attemptNumber: nextAttemptNumber,
         }),
@@ -290,28 +290,22 @@ export default function PracticeWorkspaceShell({
         feedback: body,
       };
 
-      if (nextAttemptNumber === 1) {
-        setSessionThreads((current) =>
-          updateActiveThread(current, (thread) => ({
-            ...thread,
-            attempts: [nextAttempt],
-            stage: "feedback",
-          })),
-        );
-        setAnswerDraft(trimmedAnswer);
-        return;
-      }
+      const completed = hasReachedCompletionThreshold(body);
 
       setSessionThreads((current) =>
         updateActiveThread(current, (thread) => ({
           ...thread,
-          attempts:
-            thread.attempts.length > 0
-              ? [thread.attempts[0], nextAttempt]
-              : [nextAttempt],
-          stage: "complete",
+          attempts: [...thread.attempts, nextAttempt],
+          stage: completed ? "complete" : "feedback",
+          isCollapsed: completed ? false : thread.isCollapsed,
         })),
       );
+
+      if (!completed) {
+        setAnswerDraft(trimmedAnswer);
+        return;
+      }
+
       setAnswerDraft("");
 
       const nextCompletedQuestionCount = completedQuestionCount + 1;
@@ -363,7 +357,17 @@ export default function PracticeWorkspaceShell({
         stage: "improving",
       })),
     );
-    setAnswerDraft(activeThread.attempts[0].answer);
+    setAnswerDraft(getLatestAttempt(activeThread)?.answer ?? "");
+  }
+
+  function toggleCompletedThread(threadId: string) {
+    setSessionThreads((current) =>
+      current.map((thread) =>
+        thread.threadId === threadId && thread.stage === "complete"
+          ? { ...thread, isCollapsed: !thread.isCollapsed }
+          : thread,
+      ),
+    );
   }
 
   return (
@@ -436,6 +440,7 @@ export default function PracticeWorkspaceShell({
                     thread.stage === "complete" ? (
                       <CompletedPracticeThread
                         key={thread.threadId}
+                        onToggleCollapse={() => toggleCompletedThread(thread.threadId)}
                         thread={thread}
                         threadNumber={index + 1}
                       />
@@ -448,7 +453,7 @@ export default function PracticeWorkspaceShell({
                         onAnswerDraftChange={handleAnswerDraftChange}
                         onImproveAnswer={
                           thread.stage === "feedback" &&
-                          thread.attempts.length === 1
+                          thread.attempts.length > 0
                             ? handleImproveAnswer
                             : null
                         }
@@ -606,10 +611,11 @@ function ActivePracticeThread({
   const isImproving = thread.stage === "improving";
   const shouldShowComposer =
     thread.stage === "question" || thread.stage === "improving";
+  const nextAttemptNumber = getNextAttemptNumber(thread);
   const submitLabel = isMarkingAnswer
     ? "Reviewing answer..."
-    : isImproving
-      ? "Submit improved answer"
+    : thread.attempts.length > 0
+      ? `Submit attempt ${nextAttemptNumber}`
       : "Submit answer";
 
   return (
@@ -641,12 +647,14 @@ function ActivePracticeThread({
               Improve answer
             </button>
           }
-          message="Review the feedback, then write a stronger second attempt in the composer below."
+          message="Review the feedback, then write a stronger next attempt in the composer below."
         />
       ) : null}
 
       {isImproving ? (
-        <ThreadActionBar message="Drafting attempt 2. Your revised answer will appear here as the next turn once you submit it." />
+        <ThreadActionBar
+          message={`Drafting attempt ${nextAttemptNumber}. Your revised answer will appear here as the next turn once you submit it.`}
+        />
       ) : null}
 
       {shouldShowComposer ? (
@@ -674,11 +682,13 @@ function ActivePracticeThread({
 type CompletedPracticeThreadProps = {
   thread: SessionThread;
   threadNumber: number;
+  onToggleCollapse: () => void;
 };
 
 function CompletedPracticeThread({
   thread,
   threadNumber,
+  onToggleCollapse,
 }: CompletedPracticeThreadProps) {
   const firstAttempt = thread.attempts[0] ?? null;
   const finalAttempt = thread.attempts[thread.attempts.length - 1] ?? null;
@@ -689,44 +699,78 @@ function CompletedPracticeThread({
 
   return (
     <article className="rounded-[24px] border border-slate-200/80 bg-white/80 px-4 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/65 sm:px-5">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
-              Question {threadNumber}
-            </span>
-            <span className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
-              {getCommandWordLabel(thread.question.questionType)}
-            </span>
-            <span className="text-sm text-slate-500 dark:text-slate-400">
+      <button
+        aria-expanded={!thread.isCollapsed}
+        className="flex w-full flex-col gap-4 text-left"
+        onClick={onToggleCollapse}
+        type="button"
+      >
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
+                Question {threadNumber}
+              </span>
+              <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">
+                Completed
+              </span>
+              <span className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+                {getCommandWordLabel(thread.question.questionType)}
+              </span>
+            </div>
+
+            <p className="mt-3 text-sm leading-6 text-slate-500 dark:text-slate-400">
               {thread.question.topicLabel} / {thread.question.subtopicLabel}
-            </span>
+            </p>
           </div>
 
-          <p className="mt-3 text-base font-semibold leading-7 text-slate-900 dark:text-white">
-            {thread.question.questionText}
-          </p>
+          <div className="flex shrink-0 items-center gap-3">
+            <span className="inline-flex rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+              {thread.question.marks} marks
+            </span>
+            <span className="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 dark:text-slate-300">
+              {thread.isCollapsed ? "Show history" : "Hide history"}
+              <ThreadDisclosureIcon
+                className={`h-4 w-4 transition-transform ${
+                  thread.isCollapsed ? "" : "rotate-180"
+                }`}
+              />
+            </span>
+          </div>
         </div>
-
-        <span className="inline-flex shrink-0 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
-          {thread.question.marks} marks
-        </span>
-      </div>
+      </button>
 
       <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-slate-200/80 pt-4 text-sm leading-6 text-slate-600 dark:border-slate-800/80 dark:text-slate-300">
-        <span className="font-semibold text-emerald-700 dark:text-emerald-300">
-          Completed
-        </span>
         {finalAttempt ? (
           <span>
             Final score:{" "}
             <span className="font-semibold text-slate-950 dark:text-white">
-              {finalAttempt.feedback.estimatedMark}/{finalAttempt.feedback.maxMarks}
+              {finalAttempt.feedback.score}/{finalAttempt.feedback.maxScore}
             </span>
+            {finalAttempt.feedback.level !== null
+              ? ` · Level ${finalAttempt.feedback.level}`
+              : ""}
           </span>
         ) : null}
+        <span>Attempts: {thread.attempts.length}</span>
         <span>{improvementLabel}</span>
       </div>
+
+      {!thread.isCollapsed ? (
+        <div className="mt-5 space-y-5 border-t border-slate-200/80 pt-5 dark:border-slate-800/80">
+          <QuestionThreadHeader
+            isCondensed
+            question={thread.question}
+            threadNumber={threadNumber}
+          />
+
+          <div className="space-y-5">
+            {thread.attempts.map((attempt) => (
+              <ThreadTurn attempt={attempt} key={attempt.attemptNumber} />
+            ))}
+          </div>
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -801,7 +845,19 @@ type ThreadTurnProps = {
   attempt: PracticeAttempt;
 };
 
+type RubricAssessmentItem = MarkAnswerResponse["rubricAssessment"][number];
+
 function ThreadTurn({ attempt }: ThreadTurnProps) {
+  const correctItems = attempt.feedback.rubricAssessment.filter(
+    (item) => item.status === "present",
+  );
+  const missingItems = attempt.feedback.rubricAssessment.filter(
+    (item) => item.status === "absent",
+  );
+  const partialItems = attempt.feedback.rubricAssessment.filter(
+    (item) => item.status === "partial",
+  );
+
   return (
     <div className="space-y-4">
       <ThreadBlock
@@ -819,61 +875,222 @@ function ThreadTurn({ attempt }: ThreadTurnProps) {
         caption={`AI review - Attempt ${attempt.attemptNumber}`}
         headerTrailing={
           <span className="inline-flex rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-            {attempt.feedback.estimatedMark}/{attempt.feedback.maxMarks}
+            {attempt.feedback.score}/{attempt.feedback.maxScore}
+            {attempt.feedback.level !== null
+              ? ` · Level ${attempt.feedback.level}`
+              : ""}
           </span>
         }
         tone="feedback"
       >
         <div className="space-y-5">
-          <FeedbackList
-            items={attempt.feedback.whatWasGood}
-            title="What was good"
-            tone="positive"
+          <ReviewScoreSection feedback={attempt.feedback} />
+          <RubricAssessmentSection
+            emptyMessage="No mark points matched."
+            items={correctItems}
+            status="present"
+            title="Correct"
           />
-          <FeedbackList
-            items={attempt.feedback.missingPoints}
-            title="Missing points"
-            tone="neutral"
+          <RubricAssessmentSection
+            emptyMessage="No missing rubric points."
+            items={missingItems}
+            status="absent"
+            title="Missing"
           />
-          <FeedbackList
-            items={[attempt.feedback.improvementAdvice]}
-            title="Improve the next draft"
-            tone="advice"
-          />
+          {partialItems.length > 0 ? (
+            <RubricAssessmentSection
+              items={partialItems}
+              showReason
+              status="partial"
+              title="Partial"
+            />
+          ) : null}
+          <NextDraftTargetSection nextStep={attempt.feedback.feedback.nextStep} />
         </div>
       </ThreadBlock>
     </div>
   );
 }
 
-type FeedbackListProps = {
-  title: string;
-  items: string[];
-  tone: "positive" | "neutral" | "advice";
+type ReviewScoreSectionProps = {
+  feedback: MarkAnswerResponse;
 };
 
-function FeedbackList({ title, items, tone }: FeedbackListProps) {
-  const markerClass =
-    tone === "positive"
-      ? "text-emerald-600 dark:text-emerald-300"
-      : tone === "advice"
-        ? "text-sky-700 dark:text-sky-300"
-        : "text-amber-600 dark:text-amber-300";
-
+function ReviewScoreSection({ feedback }: ReviewScoreSectionProps) {
   return (
-    <div className="space-y-2">
+    <section className="rounded-[22px] border border-slate-200 bg-white/85 px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+        Score
+      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <p className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">
+          {feedback.score}/{feedback.maxScore}
+        </p>
+        {feedback.level !== null ? (
+          <span className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
+            Level {feedback.level}
+          </span>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+type RubricAssessmentSectionProps = {
+  title: string;
+  items: RubricAssessmentItem[];
+  status: RubricAssessmentItem["status"];
+  emptyMessage?: string;
+  showReason?: boolean;
+};
+
+function RubricAssessmentSection({
+  title,
+  items,
+  status,
+  emptyMessage,
+  showReason = false,
+}: RubricAssessmentSectionProps) {
+  return (
+    <section className="space-y-3">
       <p className="text-sm font-semibold text-slate-900 dark:text-white">
         {title}
       </p>
-      <ul className="space-y-2 text-sm leading-6 text-slate-700 dark:text-slate-300">
-        {items.map((item) => (
-          <li className="flex gap-2" key={item}>
-            <span className={`${markerClass} mt-[2px]`}>-</span>
-            <span>{item}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
+      {items.length === 0 ? (
+        <p className="rounded-[20px] border border-dashed border-slate-300 bg-white/75 px-4 py-3 text-sm leading-6 text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
+          {emptyMessage}
+        </p>
+      ) : status === "absent" ? (
+        <CompactMissingList items={items} />
+      ) : (
+        <ul className="space-y-2.5">
+          {items.map((item, index) => (
+            <RubricAssessmentRow
+              item={item}
+              key={`${item.pointText}-${index}`}
+              showReason={showReason}
+              status={status}
+            />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function CompactMissingList({ items }: { items: RubricAssessmentItem[] }) {
+  return (
+    <ul className="overflow-hidden rounded-[20px] border border-slate-200 bg-white/75 dark:border-slate-800 dark:bg-slate-900/70">
+      {items.map((item, index) => (
+        <li
+          className={`px-4 py-3 text-sm leading-6 text-slate-700 dark:text-slate-300 ${
+            index === 0 ? "" : "border-t border-slate-200/80 dark:border-slate-800/80"
+          }`}
+          key={`${item.pointText}-${index}`}
+        >
+          {item.pointText}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+type RubricAssessmentRowProps = {
+  item: RubricAssessmentItem;
+  status: RubricAssessmentItem["status"];
+  showReason: boolean;
+};
+
+function RubricAssessmentRow({
+  item,
+  status,
+  showReason,
+}: RubricAssessmentRowProps) {
+  const surfaceClass =
+    status === "present"
+      ? "border-emerald-200 bg-emerald-50/55 dark:border-emerald-500/30 dark:bg-emerald-500/10"
+      : "border-amber-200 bg-amber-50/55 dark:border-amber-500/30 dark:bg-amber-500/10";
+
+  return (
+    <li className={`rounded-[18px] border px-3.5 py-3 ${surfaceClass}`}>
+      <div className="flex items-start gap-3">
+        <ReviewStatusMarker status={status} />
+        <div className="min-w-0 flex-1 space-y-2">
+          <p className="text-sm font-semibold leading-6 text-slate-900 dark:text-white">
+            {item.pointText}
+          </p>
+          {status !== "absent" ? (
+            <p className="text-sm leading-6 text-slate-700 dark:text-slate-300">
+              <span className="font-semibold text-slate-900 dark:text-white">
+                Evidence:
+              </span>{" "}
+              {item.evidence}
+            </p>
+          ) : null}
+          {showReason ? (
+            <p className="text-sm leading-6 text-slate-700 dark:text-slate-300">
+              <span className="font-semibold text-slate-900 dark:text-white">
+                Reason:
+              </span>{" "}
+              {item.reason}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function ReviewStatusMarker({
+  status,
+}: {
+  status: RubricAssessmentItem["status"];
+}) {
+  const markerClass =
+    status === "present"
+      ? "border-emerald-200 bg-emerald-100 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/20 dark:text-emerald-200"
+      : status === "partial"
+        ? "border-amber-200 bg-amber-100 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/20 dark:text-amber-200"
+        : "border-slate-200 bg-slate-100 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300";
+
+  return (
+    <span
+      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border ${markerClass}`}
+    >
+      {status === "present" ? (
+        <svg
+          aria-hidden="true"
+          className="h-3.5 w-3.5"
+          fill="none"
+          viewBox="0 0 24 24"
+        >
+          <path
+            d="M5 12.5 9.5 17 19 7.5"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2"
+          />
+        </svg>
+      ) : (
+        <span className="text-xs font-semibold">
+          {status === "partial" ? "~" : "-"}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function NextDraftTargetSection({ nextStep }: { nextStep: string }) {
+  return (
+    <section className="space-y-3">
+      <p className="text-sm font-semibold text-slate-900 dark:text-white">
+        Next draft target
+      </p>
+      <div className="rounded-[22px] border border-sky-200 bg-sky-50/80 px-4 py-3 text-sm leading-6 text-sky-950 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-100">
+        {nextStep}
+      </div>
+    </section>
   );
 }
 
@@ -1008,7 +1225,7 @@ function ThreadBlock({
       <section className={surfaceClass}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className={captionClass}>{caption}</p>
-          {headerTrailing}
+          {tone === "feedback" ? null : headerTrailing}
         </div>
         <div className="mt-3">{children}</div>
       </section>
@@ -1085,6 +1302,7 @@ function createSessionThread(
     question,
     attempts: [],
     stage: "question",
+    isCollapsed: false,
   };
 }
 
@@ -1126,8 +1344,7 @@ function getImprovementLabel(
   firstAttempt: PracticeAttempt,
   finalAttempt: PracticeAttempt,
 ) {
-  const scoreDelta =
-    finalAttempt.feedback.estimatedMark - firstAttempt.feedback.estimatedMark;
+  const scoreDelta = finalAttempt.feedback.score - firstAttempt.feedback.score;
 
   if (scoreDelta > 0) {
     return `Improvement: +${scoreDelta} mark${scoreDelta === 1 ? "" : "s"}`;
@@ -1140,6 +1357,22 @@ function getImprovementLabel(
   }
 
   return "Improvement: score unchanged";
+}
+
+function getLatestAttempt(thread: SessionThread) {
+  return thread.attempts[thread.attempts.length - 1] ?? null;
+}
+
+function getNextAttemptNumber(thread: SessionThread) {
+  return (getLatestAttempt(thread)?.attemptNumber ?? 0) + 1;
+}
+
+function getCompletionThreshold(maxScore: number) {
+  return maxScore <= 3 ? maxScore : maxScore - 1;
+}
+
+function hasReachedCompletionThreshold(feedback: MarkAnswerResponse) {
+  return feedback.score >= getCompletionThreshold(feedback.maxScore);
 }
 
 async function readResponseBody(response: Response) {
@@ -1168,6 +1401,7 @@ function isGenerateQuestionResponse(
     typeof body.subtopicId === "string" &&
     typeof body.subtopicLabel === "string" &&
     typeof body.answerFocus === "string" &&
+    isPracticeMarkingStyle(body.markingStyle) &&
     Array.isArray(body.rubricPoints) &&
     body.rubricPoints.every((point) => {
       return (
@@ -1176,6 +1410,18 @@ function isGenerateQuestionResponse(
         typeof point.pointText === "string" &&
         typeof point.orderNumber === "number"
       );
+    }) &&
+    Array.isArray(body.levelDescriptors) &&
+    body.levelDescriptors.every((descriptor) => {
+      return (
+        isRecord(descriptor) &&
+        typeof descriptor.levelNumber === "number" &&
+        typeof descriptor.minMark === "number" &&
+        typeof descriptor.maxMark === "number" &&
+        typeof descriptor.descriptorText === "string" &&
+        (descriptor.communicationRequirement === null ||
+          typeof descriptor.communicationRequirement === "string")
+      );
     })
   );
 }
@@ -1183,24 +1429,36 @@ function isGenerateQuestionResponse(
 function isMarkAnswerResponse(body: unknown): body is MarkAnswerResponse {
   return (
     isRecord(body) &&
-    typeof body.questionId === "string" &&
-    typeof body.estimatedMark === "number" &&
-    typeof body.maxMarks === "number" &&
-    typeof body.topicId === "string" &&
-    typeof body.topicLabel === "string" &&
-    typeof body.subtopicId === "string" &&
-    typeof body.subtopicLabel === "string" &&
-    Array.isArray(body.whatWasGood) &&
-    body.whatWasGood.every((item) => typeof item === "string") &&
-    Array.isArray(body.missingPoints) &&
-    body.missingPoints.every((item) => typeof item === "string") &&
-    typeof body.improvementAdvice === "string" &&
-    (body.attemptNumber === 1 || body.attemptNumber === 2)
+    typeof body.score === "number" &&
+    typeof body.maxScore === "number" &&
+    (body.level === null || typeof body.level === "number") &&
+    Array.isArray(body.rubricAssessment) &&
+    body.rubricAssessment.every((assessment) => {
+      return (
+        isRecord(assessment) &&
+        typeof assessment.pointText === "string" &&
+        isRubricAssessmentStatus(assessment.status) &&
+        typeof assessment.evidence === "string" &&
+        typeof assessment.reason === "string"
+      );
+    }) &&
+    isRecord(body.feedback) &&
+    typeof body.feedback.nextStep === "string"
   );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isPracticeMarkingStyle(value: unknown): value is "points" | "levels" {
+  return value === "points" || value === "levels";
+}
+
+function isRubricAssessmentStatus(
+  value: unknown,
+): value is "present" | "partial" | "absent" {
+  return value === "present" || value === "partial" || value === "absent";
 }
 
 function PanelExpandIcon({ className }: { className?: string }) {
@@ -1213,6 +1471,25 @@ function PanelExpandIcon({ className }: { className?: string }) {
     >
       <path
         d="M7 5v14m4-12.25 5.25 5.25L11 17.25"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function ThreadDisclosureIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path
+        d="m6.75 9.75 5.25 5.25 5.25-5.25"
         stroke="currentColor"
         strokeLinecap="round"
         strokeLinejoin="round"

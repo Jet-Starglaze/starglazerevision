@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { markMockPracticeAnswer } from "@/lib/mock-biology-practice-api";
+import { markPracticeAnswer } from "@/lib/practice-answer-marking";
 
 export async function POST(request: Request) {
   const payload = await request.json().catch(() => null);
@@ -8,7 +8,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const result = markMockPracticeAnswer(payload);
+  const result = await markPracticeAnswer(payload);
 
   return NextResponse.json(result.body, { status: result.status });
 }
