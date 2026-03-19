@@ -74,6 +74,12 @@ const SAFE_ERRORS = {
   markingCriteria: "Could not load marking criteria right now.",
   markingConfiguration:
     "AI review is not configured for this deployment yet.",
+  markingMissingConfiguration:
+    "AI review is missing its OpenRouter settings on this deployment.",
+  markingInvalidCredentials:
+    "OpenRouter rejected the API key for this deployment.",
+  markingModelAccessDenied:
+    "This deployment's OpenRouter key cannot use the selected model.",
   markingTimedOut: "AI review took too long. Please try again.",
   markingRateLimited:
     "AI review is busy right now. Please try again in a moment.",
@@ -761,18 +767,19 @@ function normalizeLevelNumber(value: unknown) {
 
 function getSafeModelClientErrorMessage(caughtError: unknown) {
   if (caughtError instanceof ModelConfigurationError) {
-    return SAFE_ERRORS.markingConfiguration;
+    return SAFE_ERRORS.markingMissingConfiguration;
   }
 
   return SAFE_ERRORS.markingFailure;
 }
 
 function getSafeModelRequestErrorMessage(caughtError: unknown) {
-  if (
-    caughtError instanceof OpenAI.AuthenticationError ||
-    caughtError instanceof OpenAI.PermissionDeniedError
-  ) {
-    return SAFE_ERRORS.markingConfiguration;
+  if (caughtError instanceof OpenAI.AuthenticationError) {
+    return SAFE_ERRORS.markingInvalidCredentials;
+  }
+
+  if (caughtError instanceof OpenAI.PermissionDeniedError) {
+    return SAFE_ERRORS.markingModelAccessDenied;
   }
 
   if (caughtError instanceof OpenAI.RateLimitError) {
@@ -797,7 +804,9 @@ function getSafeModelRequestErrorMessage(caughtError: unknown) {
     }
 
     if (caughtError.status === 401 || caughtError.status === 403) {
-      return SAFE_ERRORS.markingConfiguration;
+      return caughtError.status === 401
+        ? SAFE_ERRORS.markingInvalidCredentials
+        : SAFE_ERRORS.markingModelAccessDenied;
     }
 
     if (caughtError.status !== undefined && caughtError.status >= 500) {
