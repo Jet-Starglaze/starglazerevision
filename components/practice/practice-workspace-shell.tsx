@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Breadcrumbs from "@/components/breadcrumbs";
 import PracticeInputBar from "@/components/practice/practice-input-bar";
 import PracticeSessionPanel from "@/components/practice/practice-session-panel";
@@ -78,6 +78,10 @@ export default function PracticeWorkspaceShell({
   const [answerError, setAnswerError] = useState<string | null>(null);
   const [isGeneratingQuestion, setIsGeneratingQuestion] = useState(false);
   const [isMarkingAnswer, setIsMarkingAnswer] = useState(false);
+  const [answerReviewStartedAt, setAnswerReviewStartedAt] = useState<number | null>(
+    null,
+  );
+  const [answerReviewElapsedMs, setAnswerReviewElapsedMs] = useState(0);
   const [isDesktopSessionPanelCollapsed, setIsDesktopSessionPanelCollapsed] =
     useState(false);
   const sessionRequestTokenRef = useRef(0);
@@ -114,6 +118,29 @@ export default function PracticeWorkspaceShell({
   const desktopLayoutClass = isDesktopSessionPanelCollapsed
     ? "xl:grid-cols-[minmax(0,1fr)_3.75rem]"
     : "xl:grid-cols-[minmax(0,1fr)_320px]";
+  const answerReviewTimerLabel =
+    answerReviewStartedAt === null
+      ? null
+      : `AI review timer: ${formatElapsedSeconds(answerReviewElapsedMs)} elapsed`;
+
+  useEffect(() => {
+    if (answerReviewStartedAt === null) {
+      setAnswerReviewElapsedMs(0);
+      return;
+    }
+
+    const updateElapsedTime = () => {
+      setAnswerReviewElapsedMs(Date.now() - answerReviewStartedAt);
+    };
+
+    updateElapsedTime();
+
+    const intervalId = window.setInterval(updateElapsedTime, 250);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [answerReviewStartedAt]);
 
   function resetSession() {
     sessionRequestTokenRef.current += 1;
@@ -125,6 +152,8 @@ export default function PracticeWorkspaceShell({
     setAnswerError(null);
     setIsGeneratingQuestion(false);
     setIsMarkingAnswer(false);
+    setAnswerReviewStartedAt(null);
+    setAnswerReviewElapsedMs(0);
     setIsDesktopSessionPanelCollapsed(false);
   }
 
@@ -253,6 +282,7 @@ export default function PracticeWorkspaceShell({
     setAnswerError(null);
     setGenerationError(null);
     setIsMarkingAnswer(true);
+    setAnswerReviewStartedAt(Date.now());
 
     try {
       const response = await fetch("/api/mark-answer", {
@@ -271,6 +301,8 @@ export default function PracticeWorkspaceShell({
       if (requestToken !== sessionRequestTokenRef.current) {
         return;
       }
+
+      setAnswerReviewStartedAt(null);
 
       if (!response.ok) {
         setAnswerError(
@@ -336,11 +368,13 @@ export default function PracticeWorkspaceShell({
       }
     } catch {
       if (requestToken === sessionRequestTokenRef.current) {
+        setAnswerReviewStartedAt(null);
         setAnswerError("Could not review this answer right now.");
       }
     } finally {
       if (requestToken === sessionRequestTokenRef.current) {
         setIsMarkingAnswer(false);
+        setAnswerReviewStartedAt(null);
       }
     }
   }
@@ -448,6 +482,7 @@ export default function PracticeWorkspaceShell({
                       <ActivePracticeThread
                         answerDraft={answerDraft}
                         answerError={answerError}
+                        answerReviewTimerLabel={answerReviewTimerLabel}
                         isMarkingAnswer={isMarkingAnswer}
                         key={thread.threadId}
                         onAnswerDraftChange={handleAnswerDraftChange}
@@ -592,6 +627,7 @@ type ActivePracticeThreadProps = {
   threadNumber: number;
   answerDraft: string;
   answerError: string | null;
+  answerReviewTimerLabel: string | null;
   isMarkingAnswer: boolean;
   onAnswerDraftChange: (value: string) => void;
   onSubmitAnswer: () => void;
@@ -603,6 +639,7 @@ function ActivePracticeThread({
   threadNumber,
   answerDraft,
   answerError,
+  answerReviewTimerLabel,
   isMarkingAnswer,
   onAnswerDraftChange,
   onSubmitAnswer,
@@ -666,6 +703,7 @@ function ActivePracticeThread({
           ) : null}
 
           <PracticeInputBar
+            footerNote={answerReviewTimerLabel}
             onSubmit={onSubmitAnswer}
             onValueChange={onAnswerDraftChange}
             readOnly={isMarkingAnswer}
@@ -1314,6 +1352,10 @@ function getPrimaryActionLabel(threadCount: number, hasActiveThread: boolean) {
   return "Generate question";
 }
 
+function formatElapsedSeconds(milliseconds: number) {
+  return `${(milliseconds / 1000).toFixed(1)}s`;
+}
+
 function updateActiveThread(
   threads: SessionThread[],
   updater: (thread: SessionThread) => SessionThread,
@@ -1432,6 +1474,7 @@ function isMarkAnswerResponse(body: unknown): body is MarkAnswerResponse {
     typeof body.score === "number" &&
     typeof body.maxScore === "number" &&
     (body.level === null || typeof body.level === "number") &&
+    (body.levelReasoning === null || typeof body.levelReasoning === "string") &&
     Array.isArray(body.rubricAssessment) &&
     body.rubricAssessment.every((assessment) => {
       return (

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent } from "react";
+import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 
 type PracticeInputBarProps = {
   value: string;
@@ -7,6 +7,7 @@ type PracticeInputBarProps = {
   readOnly?: boolean;
   submitDisabled?: boolean;
   submitLabel?: string;
+  footerNote?: ReactNode;
 };
 
 export default function PracticeInputBar({
@@ -16,6 +17,7 @@ export default function PracticeInputBar({
   readOnly = false,
   submitDisabled = false,
   submitLabel = "Submit",
+  footerNote,
 }: PracticeInputBarProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isDisabled = readOnly || submitDisabled;
@@ -72,6 +74,12 @@ export default function PracticeInputBar({
           {submitLabel}
         </button>
       </div>
+
+      {footerNote ? (
+        <div className="mt-2 text-[11px] font-medium text-sky-700 dark:text-sky-200">
+          {footerNote}
+        </div>
+      ) : null}
     </div>
   );
 }

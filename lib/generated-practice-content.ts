@@ -24,6 +24,10 @@ type GeneratedRubricPointRow = {
   order_number: number;
 };
 
+type GeneratedRubricPointRowWithConceptGroup = GeneratedRubricPointRow & {
+  concept_group: string | null;
+};
+
 type GeneratedLevelDescriptorRow = {
   level_number: number;
   min_mark: number;
@@ -32,12 +36,17 @@ type GeneratedLevelDescriptorRow = {
   communication_requirement: string | null;
 };
 
+export type GeneratedMarkingRubricPoint = PracticeRubricPoint & {
+  conceptGroup: string | null;
+};
+
 type QuestionForeignKeyColumn = "generated_question_id" | "question_id";
 
 const generatedQuestionForeignKeyColumns: readonly QuestionForeignKeyColumn[] = [
   "generated_question_id",
   "question_id",
 ];
+let generatedRubricPointConceptGroupAvailable: boolean | null = null;
 
 export async function fetchGeneratedQuestionById(
   supabase: SupabaseServerClient,
@@ -85,6 +94,25 @@ export async function fetchGeneratedRubricPoints(
       id: toNumericId(point.id),
       pointText: point.point_text,
       orderNumber: point.order_number,
+    }));
+}
+
+export async function fetchGeneratedRubricPointsForMarking(
+  supabase: SupabaseServerClient,
+  questionId: number | string,
+): Promise<GeneratedMarkingRubricPoint[]> {
+  const rows = await fetchGeneratedRubricPointsWithOptionalConceptGroup(
+    supabase,
+    questionId,
+  );
+
+  return [...rows]
+    .sort((left, right) => left.order_number - right.order_number)
+    .map((point) => ({
+      id: toNumericId(point.id),
+      pointText: point.point_text,
+      orderNumber: point.order_number,
+      conceptGroup: point.concept_group ?? null,
     }));
 }
 
@@ -220,6 +248,76 @@ async function fetchGeneratedRowsByQuestionId<T>({
   }
 
   throw new Error(`Failed to load ${table}: ${attemptedErrors.join("; ")}`);
+}
+
+async function fetchGeneratedRubricPointsWithOptionalConceptGroup(
+  supabase: SupabaseServerClient,
+  questionId: number | string,
+): Promise<GeneratedRubricPointRowWithConceptGroup[]> {
+  if (generatedRubricPointConceptGroupAvailable === false) {
+    const rows = await fetchGeneratedRowsByQuestionId<GeneratedRubricPointRow>({
+      supabase,
+      table: "generated_rubric_points",
+      select: "id, point_text, order_number",
+      questionId,
+      orderColumn: "order_number",
+    });
+
+    return rows.map((point) => ({
+      ...point,
+      concept_group: null,
+    }));
+  }
+
+  try {
+    const rows =
+      await fetchGeneratedRowsByQuestionId<GeneratedRubricPointRowWithConceptGroup>(
+        {
+          supabase,
+          table: "generated_rubric_points",
+          select: "id, point_text, order_number, concept_group",
+          questionId,
+          orderColumn: "order_number",
+        },
+      );
+
+    generatedRubricPointConceptGroupAvailable = true;
+
+    return rows;
+  } catch (caughtError) {
+    if (!isMissingColumnError(caughtError, "concept_group")) {
+      throw caughtError;
+    }
+
+    generatedRubricPointConceptGroupAvailable = false;
+
+    console.warn(
+      "[practice-generated-content] concept_group unavailable on generated_rubric_points",
+      {
+        questionId: String(questionId),
+      },
+    );
+
+    const rows = await fetchGeneratedRowsByQuestionId<GeneratedRubricPointRow>({
+      supabase,
+      table: "generated_rubric_points",
+      select: "id, point_text, order_number",
+      questionId,
+      orderColumn: "order_number",
+    });
+
+    return rows.map((point) => ({
+      ...point,
+      concept_group: null,
+    }));
+  }
+}
+
+function isMissingColumnError(caughtError: unknown, columnName: string) {
+  return (
+    caughtError instanceof Error &&
+    caughtError.message.toLowerCase().includes(columnName.toLowerCase())
+  );
 }
 
 function isPositiveInteger(value: unknown): value is number {

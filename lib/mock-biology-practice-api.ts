@@ -70,6 +70,7 @@ export type MarkAnswerResponse = {
   score: number;
   maxScore: number;
   level: number | null;
+  levelReasoning: string | null;
   rubricAssessment: PracticeRubricAssessment[];
   feedback: PracticeStructuredFeedback;
 };
