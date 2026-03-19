@@ -72,6 +72,13 @@ const SYSTEM_PROMPT = [
 const SAFE_ERRORS = {
   questionNotFound: "Generated question not found.",
   markingCriteria: "Could not load marking criteria right now.",
+  markingConfiguration:
+    "AI review is not configured for this deployment yet.",
+  markingTimedOut: "AI review took too long. Please try again.",
+  markingRateLimited:
+    "AI review is busy right now. Please try again in a moment.",
+  markingUnavailable:
+    "AI review is temporarily unavailable. Please try again.",
   markingFailure: "Could not review this answer right now.",
 };
 
@@ -263,14 +270,16 @@ function createModelClientOrError(
   try {
     return createModelClient();
   } catch (caughtError) {
+    const safeErrorMessage = getSafeModelClientErrorMessage(caughtError);
+
     console.error("[api/mark-answer] OpenRouter configuration missing", {
       generatedQuestionId,
       markingStyle: question.markingStyle,
-      message:
-        caughtError instanceof Error ? caughtError.message : String(caughtError),
+      safeErrorMessage,
+      ...getModelErrorLogDetails(caughtError),
     });
 
-    return createErrorResult(500, SAFE_ERRORS.markingFailure);
+    return createErrorResult(500, safeErrorMessage);
   }
 }
 
@@ -279,7 +288,9 @@ function createModelClient(): ModelClient {
   const modelName = process.env.OPENROUTER_MODEL?.trim();
 
   if (!apiKey || !modelName) {
-    throw new Error("OPENROUTER_API_KEY and OPENROUTER_MODEL are required");
+    throw new ModelConfigurationError(
+      "OPENROUTER_API_KEY and OPENROUTER_MODEL are required",
+    );
   }
 
   return {
@@ -287,6 +298,8 @@ function createModelClient(): ModelClient {
     openai: new OpenAI({
       baseURL: OPENROUTER_BASE_URL,
       apiKey,
+      maxRetries: 0,
+      timeout: MODEL_TIMEOUT_MS,
     }),
   };
 }
@@ -305,15 +318,18 @@ async function requestModelOutputOrError({
   const messages = buildMarkingMessages(question, answerText);
 
   try {
-    const completion = await withTimeout(
-      modelClient.openai.chat.completions.create({
+    const completion = await modelClient.openai.chat.completions.create(
+      {
         model: modelClient.modelName,
         temperature: MARKING_TEMPERATURE,
         max_tokens: MODEL_MAX_COMPLETION_TOKENS,
         response_format: { type: "json_object" },
         messages,
-      }),
-      MODEL_TIMEOUT_MS,
+      },
+      {
+        maxRetries: 0,
+        timeout: MODEL_TIMEOUT_MS,
+      },
     );
 
     const rawOutput = completion.choices[0]?.message?.content?.trim() ?? "";
@@ -333,15 +349,17 @@ async function requestModelOutputOrError({
       rawOutput,
     };
   } catch (caughtError) {
+    const safeErrorMessage = getSafeModelRequestErrorMessage(caughtError);
+
     console.error("[api/mark-answer] OpenRouter request failed", {
       generatedQuestionId,
       markingStyle: question.markingStyle,
       modelName: modelClient.modelName,
-      message:
-        caughtError instanceof Error ? caughtError.message : String(caughtError),
+      safeErrorMessage,
+      ...getModelErrorLogDetails(caughtError),
     });
 
-    return createErrorResult(500, SAFE_ERRORS.markingFailure);
+    return createErrorResult(500, safeErrorMessage);
   }
 }
 
@@ -741,25 +759,79 @@ function normalizeLevelNumber(value: unknown) {
   return null;
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
-  return new Promise<T>((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      reject(new Error(`Timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
+function getSafeModelClientErrorMessage(caughtError: unknown) {
+  if (caughtError instanceof ModelConfigurationError) {
+    return SAFE_ERRORS.markingConfiguration;
+  }
 
-    promise.then(
-      (value) => {
-        clearTimeout(timeoutId);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timeoutId);
-        reject(error);
-      },
-    );
-  });
+  return SAFE_ERRORS.markingFailure;
+}
+
+function getSafeModelRequestErrorMessage(caughtError: unknown) {
+  if (
+    caughtError instanceof OpenAI.AuthenticationError ||
+    caughtError instanceof OpenAI.PermissionDeniedError
+  ) {
+    return SAFE_ERRORS.markingConfiguration;
+  }
+
+  if (caughtError instanceof OpenAI.RateLimitError) {
+    return SAFE_ERRORS.markingRateLimited;
+  }
+
+  if (caughtError instanceof OpenAI.APIConnectionTimeoutError) {
+    return SAFE_ERRORS.markingTimedOut;
+  }
+
+  if (caughtError instanceof OpenAI.APIConnectionError) {
+    return SAFE_ERRORS.markingUnavailable;
+  }
+
+  if (caughtError instanceof OpenAI.APIError) {
+    if (caughtError.status === 408) {
+      return SAFE_ERRORS.markingTimedOut;
+    }
+
+    if (caughtError.status === 429) {
+      return SAFE_ERRORS.markingRateLimited;
+    }
+
+    if (caughtError.status === 401 || caughtError.status === 403) {
+      return SAFE_ERRORS.markingConfiguration;
+    }
+
+    if (caughtError.status !== undefined && caughtError.status >= 500) {
+      return SAFE_ERRORS.markingUnavailable;
+    }
+  }
+
+  if (
+    caughtError instanceof Error &&
+    /timed out/i.test(caughtError.message)
+  ) {
+    return SAFE_ERRORS.markingTimedOut;
+  }
+
+  return SAFE_ERRORS.markingFailure;
+}
+
+function getModelErrorLogDetails(caughtError: unknown) {
+  const apiError =
+    caughtError instanceof OpenAI.APIError ? caughtError : undefined;
+
+  return {
+    errorName: caughtError instanceof Error ? caughtError.name : undefined,
+    status: apiError?.status,
+    code: apiError?.code,
+    type: apiError?.type,
+    requestId: apiError?.requestID,
+    message:
+      caughtError instanceof Error ? caughtError.message : String(caughtError),
+  };
 }
 
 class GeneratedQuestionNotFoundError extends Error {}
 
 class MissingMarkingCriteriaError extends Error {}
+
+class ModelConfigurationError extends Error {}
