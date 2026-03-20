@@ -13,9 +13,7 @@ import type {
   GenerateQuestionResponse,
 } from "@/lib/mock-biology-practice-api";
 import {
-  fetchGeneratedLevelDescriptors,
   fetchGeneratedRubricPoints,
-  mapDatabaseMarkingStyle,
   toNumericId,
   type GeneratedQuestionRecord,
   type SupabaseServerClient,
@@ -122,8 +120,7 @@ export async function fetchPracticeQuestionFromSupabase(
         question_text,
         marks,
         question_type,
-        answer_focus,
-        marking_style
+        answer_focus
       `,
     )
     .eq("status", "approved")
@@ -155,30 +152,24 @@ export async function fetchPracticeQuestionFromSupabase(
     return createErrorResult(404, noApprovedQuestionsMessage);
   }
 
-  const nextQuestionRow =
-    questionRows[(questionCursor ?? 0) % questionRows.length] ?? null;
-
-  if (!nextQuestionRow) {
-    return createErrorResult(404, noApprovedQuestionsMessage);
-  }
-
   try {
-    const nextQuestion = await buildGeneratedQuestionResponse(
-      nextQuestionRow,
+    const nextQuestion = await buildNextGeneratedQuestionResponse(
+      questionRows,
+      questionCursor ?? 0,
       supabase,
     );
 
     if (!nextQuestion) {
       console.error(
-        "[api/generate-question] Generated question could not be mapped",
+        "[api/generate-question] No usable generated question found",
         {
           subjectId,
-          questionId: String(nextQuestionRow.id),
-          subtopicId: String(nextQuestionRow.subtopic_id),
+          selectedSubtopicIds: uniqueSubtopicIds,
+          questionFilterMode,
         },
       );
 
-      return createErrorResult(500, questionLoadErrorMessage);
+      return createErrorResult(404, noApprovedQuestionsMessage);
     }
 
     return {
@@ -188,13 +179,35 @@ export async function fetchPracticeQuestionFromSupabase(
   } catch (caughtError) {
     console.error("[api/generate-question] Failed to build generated question", {
       subjectId,
-      questionId: String(nextQuestionRow.id),
+      questionCursor: questionCursor ?? 0,
       message:
         caughtError instanceof Error ? caughtError.message : String(caughtError),
     });
 
     return createErrorResult(500, questionLoadErrorMessage);
   }
+}
+
+async function buildNextGeneratedQuestionResponse(
+  questionRows: GeneratedQuestionRecord[],
+  questionCursor: number,
+  supabase: SupabaseServerClient,
+): Promise<GenerateQuestionResponse | null> {
+  for (let offset = 0; offset < questionRows.length; offset += 1) {
+    const row = questionRows[(questionCursor + offset) % questionRows.length] ?? null;
+
+    if (!row) {
+      continue;
+    }
+
+    const nextQuestion = await buildGeneratedQuestionResponse(row, supabase);
+
+    if (nextQuestion) {
+      return nextQuestion;
+    }
+  }
+
+  return null;
 }
 
 async function buildGeneratedQuestionResponse(
@@ -211,12 +224,6 @@ async function buildGeneratedQuestionResponse(
     return null;
   }
 
-  const markingStyle = mapDatabaseMarkingStyle(row.marking_style, row.id);
-
-  if (!markingStyle) {
-    return null;
-  }
-
   const subtopicRow = await fetchSubtopicContext(supabase, row.subtopic_id);
   const topicRow = takeFirst(subtopicRow?.topics);
 
@@ -225,10 +232,15 @@ async function buildGeneratedQuestionResponse(
   }
 
   const rubricPoints = await fetchGeneratedRubricPoints(supabase, row.id);
-  const levelDescriptors =
-    markingStyle === "levels"
-      ? await fetchGeneratedLevelDescriptors(supabase, row.id)
-      : [];
+
+  if (rubricPoints.length === 0) {
+    console.warn("[api/generate-question] Skipping question without rubric points", {
+      questionId: String(row.id),
+      subtopicId: String(row.subtopic_id),
+    });
+
+    return null;
+  }
 
   return {
     questionId: String(toNumericId(row.id)),
@@ -240,9 +252,7 @@ async function buildGeneratedQuestionResponse(
     subtopicId: String(toNumericId(subtopicRow.id)),
     subtopicLabel: subtopicRow.name,
     answerFocus: row.answer_focus ?? "",
-    markingStyle,
     rubricPoints,
-    levelDescriptors,
   };
 }
 

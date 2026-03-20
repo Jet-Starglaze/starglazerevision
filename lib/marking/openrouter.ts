@@ -13,9 +13,16 @@ type ModelClient = {
 };
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-const MARKING_TEMPERATURE = 0.1;
+const MARKING_TEMPERATURE = 0;
 const MODEL_TIMEOUT_MS = 90_000;
-const MODEL_MAX_COMPLETION_TOKENS = 1_600;
+const MIN_MAX_COMPLETION_TOKENS = 360;
+const BASE_MAX_COMPLETION_TOKENS = 140;
+const PER_RUBRIC_POINT_MAX_COMPLETION_TOKENS = 42;
+const MAX_COMPLETION_TOKENS_CAP = 640;
+const RETRY_MAX_COMPLETION_TOKENS_CAP = 820;
+const RETRY_EXTRA_COMPLETION_TOKENS = 180;
+const MODEL_TOKEN_WARNING_THRESHOLD = 0.85;
+const SHOULD_LOG_MODEL_LIMIT_WARNINGS = process.env.NODE_ENV === "development";
 
 const SAFE_ERRORS = {
   markingMissingConfiguration:
@@ -43,51 +50,50 @@ export async function requestMarkingModelOutput(
   }
 
   try {
-    const completion = await modelClient.openai.chat.completions.create(
-      {
-        model: modelClient.modelName,
-        temperature: MARKING_TEMPERATURE,
-        max_tokens: MODEL_MAX_COMPLETION_TOKENS,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: prompt.systemPrompt,
-          },
-          {
-            role: "user",
-            content: prompt.userPrompt,
-          },
-        ],
-      },
-      {
-        maxRetries: 0,
-        timeout: MODEL_TIMEOUT_MS,
-      },
-    );
-
+    const requestStartedAt = performance.now();
+    const maxCompletionTokens = getMaxCompletionTokens(input);
+    const completionResult = await requestCompletionWithRetry({
+      modelClient,
+      input,
+      prompt,
+      maxCompletionTokens,
+    });
+    const completion = completionResult.completion;
+    const finalMaxCompletionTokens = completionResult.maxCompletionTokensUsed;
     const rawOutput = completion.choices[0]?.message?.content?.trim() ?? "";
+    const completionTokensUsed = completion.usage?.completion_tokens ?? null;
+    const finishReason = completion.choices[0]?.finish_reason ?? null;
 
     if (rawOutput.length === 0) {
       console.error("[api/mark-answer] OpenRouter returned empty content", {
         generatedQuestionId: input.generatedQuestionId,
-        markingStyle: input.markingStyle,
         modelName: modelClient.modelName,
       });
 
       return createErrorResult(500, SAFE_ERRORS.markingFailure);
     }
 
+    maybeWarnAboutModelTokenHeadroom({
+      completionTokensUsed,
+      finishReason,
+      generatedQuestionId: input.generatedQuestionId,
+      maxCompletionTokens: finalMaxCompletionTokens,
+      modelName: modelClient.modelName,
+    });
+
     return {
       modelName: modelClient.modelName,
       rawOutput,
+      durationMs: roundTimingMs(performance.now() - requestStartedAt),
+      maxCompletionTokens: finalMaxCompletionTokens,
+      completionTokensUsed,
+      finishReason,
     };
   } catch (caughtError) {
     const safeErrorMessage = getSafeModelRequestErrorMessage(caughtError);
 
     console.error("[api/mark-answer] OpenRouter request failed", {
       generatedQuestionId: input.generatedQuestionId,
-      markingStyle: input.markingStyle,
       modelName: modelClient.modelName,
       safeErrorMessage,
       ...getModelErrorLogDetails(caughtError),
@@ -95,6 +101,149 @@ export async function requestMarkingModelOutput(
 
     return createErrorResult(500, safeErrorMessage);
   }
+}
+
+async function requestCompletionWithRetry({
+  modelClient,
+  input,
+  prompt,
+  maxCompletionTokens,
+}: {
+  modelClient: ModelClient;
+  input: PreparedMarkingInput;
+  prompt: MarkingPrompt;
+  maxCompletionTokens: number;
+}) {
+  const initialCompletion = await requestCompletion({
+    modelClient,
+    prompt,
+    maxCompletionTokens,
+  });
+  const initialFinishReason = initialCompletion.choices[0]?.finish_reason ?? null;
+
+  if (initialFinishReason !== "length") {
+    return {
+      completion: initialCompletion,
+      maxCompletionTokensUsed: maxCompletionTokens,
+    };
+  }
+
+  const retryMaxCompletionTokens = Math.min(
+    RETRY_MAX_COMPLETION_TOKENS_CAP,
+    maxCompletionTokens + RETRY_EXTRA_COMPLETION_TOKENS,
+  );
+
+  if (retryMaxCompletionTokens <= maxCompletionTokens) {
+    return {
+      completion: initialCompletion,
+      maxCompletionTokensUsed: maxCompletionTokens,
+    };
+  }
+
+  if (SHOULD_LOG_MODEL_LIMIT_WARNINGS) {
+    console.warn(
+      `[api/mark-answer] model-retry-length ${JSON.stringify({
+        generatedQuestionId: input.generatedQuestionId,
+        modelName: modelClient.modelName,
+        initialMaxCompletionTokens: maxCompletionTokens,
+        retryMaxCompletionTokens,
+      })}`,
+    );
+  }
+
+  const retryCompletion = await requestCompletion({
+    modelClient,
+    prompt,
+    maxCompletionTokens: retryMaxCompletionTokens,
+  });
+
+  return {
+    completion: retryCompletion,
+    maxCompletionTokensUsed: retryMaxCompletionTokens,
+  };
+}
+
+async function requestCompletion({
+  modelClient,
+  prompt,
+  maxCompletionTokens,
+}: {
+  modelClient: ModelClient;
+  prompt: MarkingPrompt;
+  maxCompletionTokens: number;
+}) {
+  return modelClient.openai.chat.completions.create(
+    {
+      model: modelClient.modelName,
+      temperature: MARKING_TEMPERATURE,
+      max_tokens: maxCompletionTokens,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: prompt.systemPrompt,
+        },
+        {
+          role: "user",
+          content: prompt.userPrompt,
+        },
+      ],
+    },
+    {
+      maxRetries: 0,
+      timeout: MODEL_TIMEOUT_MS,
+    },
+  );
+}
+
+function getMaxCompletionTokens(input: PreparedMarkingInput) {
+  return Math.min(
+    MAX_COMPLETION_TOKENS_CAP,
+    Math.max(
+      MIN_MAX_COMPLETION_TOKENS,
+      BASE_MAX_COMPLETION_TOKENS +
+        input.rubricPoints.length * PER_RUBRIC_POINT_MAX_COMPLETION_TOKENS,
+    ),
+  );
+}
+
+function maybeWarnAboutModelTokenHeadroom({
+  generatedQuestionId,
+  modelName,
+  maxCompletionTokens,
+  completionTokensUsed,
+  finishReason,
+}: {
+  generatedQuestionId: number;
+  modelName: string;
+  maxCompletionTokens: number;
+  completionTokensUsed: number | null;
+  finishReason: string | null;
+}) {
+  if (!SHOULD_LOG_MODEL_LIMIT_WARNINGS) {
+    return;
+  }
+
+  const isNearTokenLimit =
+    finishReason === "length" ||
+    (completionTokensUsed !== null &&
+      completionTokensUsed >=
+        Math.ceil(maxCompletionTokens * MODEL_TOKEN_WARNING_THRESHOLD));
+
+  if (!isNearTokenLimit) {
+    return;
+  }
+
+  console.warn(
+    `[api/mark-answer] model-token-headroom ${JSON.stringify({
+      generatedQuestionId,
+      modelName,
+      modelMaxTokens: maxCompletionTokens,
+      completionTokensUsed,
+      finishReason,
+      modelTokenHeadroom: "low",
+    })}`,
+  );
 }
 
 function createModelClientOrError(
@@ -107,7 +256,6 @@ function createModelClientOrError(
 
     console.error("[api/mark-answer] OpenRouter configuration missing", {
       generatedQuestionId: input.generatedQuestionId,
-      markingStyle: input.markingStyle,
       safeErrorMessage,
       ...getModelErrorLogDetails(caughtError),
     });
@@ -200,4 +348,8 @@ function getModelErrorLogDetails(caughtError: unknown) {
     message:
       caughtError instanceof Error ? caughtError.message : String(caughtError),
   };
+}
+
+function roundTimingMs(value: number) {
+  return Number(value.toFixed(1));
 }

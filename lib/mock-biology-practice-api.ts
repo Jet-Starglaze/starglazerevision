@@ -14,23 +14,12 @@ export type PracticeRubricPoint = {
   orderNumber: number;
 };
 
-export type PracticeMarkingStyle = "points" | "levels";
-
-export type PracticeLevelDescriptor = {
-  levelNumber: number;
-  minMark: number;
-  maxMark: number;
-  descriptorText: string;
-  communicationRequirement: string | null;
-};
-
 export type PracticeRubricAssessmentStatus = "present" | "partial" | "absent";
 
 export type PracticeRubricAssessment = {
   pointText: string;
   status: PracticeRubricAssessmentStatus;
   evidence: string;
-  reason: string;
 };
 
 export type PracticeStructuredFeedback = {
@@ -55,9 +44,7 @@ export type GenerateQuestionResponse = {
   subtopicId: string;
   subtopicLabel: string;
   answerFocus: string;
-  markingStyle: PracticeMarkingStyle;
   rubricPoints: PracticeRubricPoint[];
-  levelDescriptors: PracticeLevelDescriptor[];
 };
 
 export type MarkAnswerRequest = {
@@ -69,8 +56,6 @@ export type MarkAnswerRequest = {
 export type MarkAnswerResponse = {
   score: number;
   maxScore: number;
-  level: number | null;
-  levelReasoning: string | null;
   rubricAssessment: PracticeRubricAssessment[];
   feedback: PracticeStructuredFeedback;
 };

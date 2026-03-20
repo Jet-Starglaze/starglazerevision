@@ -27,6 +27,7 @@ type WorkspaceSelectedSubtopic = {
 type PracticeWorkspaceShellProps = {
   subjectName: string;
   subjectSlug: string;
+  selectionKey: string;
   selectedSubtopicIds: number[];
   selectedSubtopics: WorkspaceSelectedSubtopic[];
   isSessionPanelOpen: boolean;
@@ -57,9 +58,13 @@ const primaryButtonClass =
 const secondaryButtonClass =
   "inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-3.5 py-2 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:hover:border-sky-500 dark:hover:text-sky-200";
 
+const DEFAULT_QUESTION_FILTER_MODE: PracticeQuestionFilterMode = "mixed";
+const DEFAULT_SESSION_LENGTH: PracticeSessionLength = 5;
+
 export default function PracticeWorkspaceShell({
   subjectName,
   subjectSlug,
+  selectionKey,
   selectedSubtopicIds,
   selectedSubtopics,
   isSessionPanelOpen,
@@ -68,8 +73,9 @@ export default function PracticeWorkspaceShell({
   onOpenSidebar,
 }: PracticeWorkspaceShellProps) {
   const [questionFilterMode, setQuestionFilterMode] =
-    useState<PracticeQuestionFilterMode>("mixed");
-  const [sessionLength, setSessionLength] = useState<PracticeSessionLength>(5);
+    useState<PracticeQuestionFilterMode>(DEFAULT_QUESTION_FILTER_MODE);
+  const [sessionLength, setSessionLength] =
+    useState<PracticeSessionLength>(DEFAULT_SESSION_LENGTH);
   const [sessionThreads, setSessionThreads] = useState<SessionThread[]>([]);
   const [answerDraft, setAnswerDraft] = useState("");
   const [questionCursor, setQuestionCursor] = useState(0);
@@ -84,6 +90,8 @@ export default function PracticeWorkspaceShell({
   const [answerReviewElapsedMs, setAnswerReviewElapsedMs] = useState(0);
   const [isDesktopSessionPanelCollapsed, setIsDesktopSessionPanelCollapsed] =
     useState(false);
+  const centerScrollContainerRef = useRef<HTMLDivElement>(null);
+  const previousSelectionKeyRef = useRef(selectionKey);
   const sessionRequestTokenRef = useRef(0);
 
   const activeThread = getActiveThread(sessionThreads);
@@ -105,6 +113,11 @@ export default function PracticeWorkspaceShell({
     generationError !== null ||
     answerError !== null;
   const isSessionInProgress = sessionThreads.length > 0 || isGeneratingNextThread;
+  const canGenerateQuestion =
+    hasSelectedTopics &&
+    !isGeneratingQuestion &&
+    activeThread === null &&
+    !isSessionComplete;
   const primaryActionLabel = getPrimaryActionLabel(
     sessionThreads.length,
     activeThread !== null,
@@ -142,7 +155,30 @@ export default function PracticeWorkspaceShell({
     };
   }, [answerReviewStartedAt]);
 
-  function resetSession() {
+  useEffect(() => {
+    if (previousSelectionKeyRef.current === selectionKey) {
+      return;
+    }
+
+    previousSelectionKeyRef.current = selectionKey;
+    resetSessionState({ resetControls: true, scrollToTop: true });
+  }, [selectionKey]);
+
+  function scrollMainContentToTop() {
+    const scrollContainer = centerScrollContainerRef.current;
+
+    if (scrollContainer) {
+      scrollContainer.scrollTop = 0;
+    }
+  }
+
+  function resetSessionState({
+    resetControls = false,
+    scrollToTop = false,
+  }: {
+    resetControls?: boolean;
+    scrollToTop?: boolean;
+  } = {}) {
     sessionRequestTokenRef.current += 1;
     setSessionThreads([]);
     setAnswerDraft("");
@@ -155,13 +191,26 @@ export default function PracticeWorkspaceShell({
     setAnswerReviewStartedAt(null);
     setAnswerReviewElapsedMs(0);
     setIsDesktopSessionPanelCollapsed(false);
+
+    if (resetControls) {
+      setQuestionFilterMode(DEFAULT_QUESTION_FILTER_MODE);
+      setSessionLength(DEFAULT_SESSION_LENGTH);
+    }
+
+    if (scrollToTop) {
+      scrollMainContentToTop();
+    }
+  }
+
+  function resetSession() {
+    resetSessionState({ scrollToTop: true });
   }
 
   function handleQuestionFilterModeChange(
     nextFilterMode: PracticeQuestionFilterMode,
   ) {
     setQuestionFilterMode(nextFilterMode);
-    resetSession();
+    resetSessionState({ scrollToTop: true });
   }
 
   function handleSessionLengthChange(nextLength: PracticeSessionLength) {
@@ -405,68 +454,80 @@ export default function PracticeWorkspaceShell({
   }
 
   return (
-    <section className="relative flex min-h-full min-w-0 bg-slate-50 dark:bg-slate-950">
-      <div className={`grid min-h-full min-w-0 flex-1 ${desktopLayoutClass}`}>
+    <section className="relative flex min-h-full min-w-0 bg-slate-50 dark:bg-slate-950 xl:h-full xl:min-h-0 xl:overflow-hidden">
+      <div
+        className={`grid min-h-full min-w-0 flex-1 ${desktopLayoutClass} xl:h-full xl:min-h-0`}
+      >
         <div className="flex min-h-0 min-w-0 flex-col bg-slate-50 dark:bg-slate-950">
-          <header className="border-b border-slate-200 bg-white/95 px-4 py-4 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95 sm:px-5 xl:px-6">
-            <div className="mx-auto flex w-full max-w-[1000px] items-start justify-between gap-3">
-              <div className="min-w-0">
-                <Breadcrumbs
-                  items={[
-                    { label: "Subjects", href: "/subjects", prefetch: true },
-                    {
-                      label: subjectName,
-                      href: `/subjects/${subjectSlug}`,
-                      prefetch: true,
-                    },
-                    { label: "Practice questions" },
-                  ]}
-                />
-                <h1 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950 dark:text-white sm:text-[2rem]">
-                  Practice questions
-                </h1>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
-                  Move through a full Biology session one thread at a time and
-                  keep each completed question visible as you progress.
-                </p>
+          <div
+            className="flex min-h-0 min-w-0 flex-1 flex-col xl:overflow-y-auto"
+            ref={centerScrollContainerRef}
+          >
+            <header className="shrink-0 border-b border-slate-200 bg-white/95 px-4 py-4 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95 sm:px-5 xl:px-6">
+              <div className="mx-auto flex w-full max-w-[1000px] items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <Breadcrumbs
+                    items={[
+                      { label: "Subjects", href: "/subjects", prefetch: true },
+                      {
+                        label: subjectName,
+                        href: `/subjects/${subjectSlug}`,
+                        prefetch: true,
+                      },
+                      { label: "Practice questions" },
+                    ]}
+                  />
+                  <h1 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950 dark:text-white sm:text-[2rem]">
+                    Practice questions
+                  </h1>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
+                    Choose a subtopic, generate a question, answer it, and improve
+                    the next draft with feedback.
+                  </p>
+                </div>
+
+                <div className="flex shrink-0 items-center gap-2 xl:hidden">
+                  <button
+                    className={secondaryButtonClass}
+                    onClick={onOpenSidebar}
+                    type="button"
+                  >
+                    Syllabus
+                  </button>
+                  <button
+                    className={secondaryButtonClass}
+                    onClick={onOpenSessionPanel}
+                    type="button"
+                  >
+                    Controls
+                  </button>
+                </div>
               </div>
 
-              <div className="flex shrink-0 items-center gap-2 xl:hidden">
-                <button
-                  className={secondaryButtonClass}
-                  onClick={onOpenSidebar}
-                  type="button"
-                >
-                  Syllabus
-                </button>
-                <button
-                  className={secondaryButtonClass}
-                  onClick={onOpenSessionPanel}
-                  type="button"
-                >
-                  Controls
-                </button>
+              <div className="mx-auto mt-4 flex w-full max-w-[1000px] flex-wrap gap-2">
+                <InlineStatusPill>
+                  {hasSelectedTopics
+                    ? `${selectedSubtopics.length} subtopic${
+                        selectedSubtopics.length === 1 ? "" : "s"
+                      } ready`
+                    : "Choose subtopics to start"}
+                </InlineStatusPill>
+                <InlineStatusPill>{sessionProgressLabel}</InlineStatusPill>
               </div>
-            </div>
+            </header>
 
-            <div className="mx-auto mt-4 flex w-full max-w-[1000px] flex-wrap gap-2">
-              <InlineStatusPill>
-                {hasSelectedTopics
-                  ? `${selectedSubtopics.length} subtopic${
-                      selectedSubtopics.length === 1 ? "" : "s"
-                    } selected`
-                  : `No topics selected in ${subjectName}`}
-              </InlineStatusPill>
-              <InlineStatusPill>{sessionProgressLabel}</InlineStatusPill>
-            </div>
-          </header>
+            <div className="mx-auto flex w-full max-w-[1000px] flex-col gap-4 px-4 py-4 sm:px-5 xl:px-6">
+              {hasSelectedTopics ? (
+                <PracticeSelectionSummary selectedSubtopics={selectedSubtopics} />
+              ) : null}
 
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto flex w-full max-w-[1000px] flex-col px-4 py-4 sm:px-5 xl:px-6">
               {sessionThreads.length === 0 ? (
                 <PracticeWorkspaceReadyState
                   hasSelectedTopics={hasSelectedTopics}
-                  selectedTopicCount={selectedSubtopics.length}
+                  isGeneratingQuestion={isGeneratingQuestion}
+                  onGenerateQuestion={handleGenerateQuestion}
+                  selectedSubtopics={selectedSubtopics}
+                  canGenerate={canGenerateQuestion}
                 />
               ) : (
                 <div className="space-y-6 pb-4 sm:space-y-7 sm:pb-6">
@@ -525,7 +586,7 @@ export default function PracticeWorkspaceShell({
           </div>
         </div>
 
-        <div className="hidden xl:block">
+        <div className="hidden xl:block xl:min-h-0">
           {isDesktopSessionPanelCollapsed ? (
             <DesktopSessionRail
               onExpand={() => setIsDesktopSessionPanelCollapsed(false)}
@@ -592,31 +653,115 @@ function InlineStatusPill({ children }: { children: ReactNode }) {
   );
 }
 
+function PracticeSelectionSummary({
+  selectedSubtopics,
+}: {
+  selectedSubtopics: WorkspaceSelectedSubtopic[];
+}) {
+  const visibleSubtopics = selectedSubtopics.slice(0, 6);
+  const remainingSubtopicCount = Math.max(
+    selectedSubtopics.length - visibleSubtopics.length,
+    0,
+  );
+  const firstSelectedSubtopic = selectedSubtopics[0];
+  const title =
+    selectedSubtopics.length === 1
+      ? `Ready to practice ${firstSelectedSubtopic?.name ?? "this subtopic"}`
+      : `${selectedSubtopics.length} subtopics selected`;
+
+  return (
+    <section className="rounded-[24px] border border-slate-200 bg-white px-4 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:px-5">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-sky-700 dark:text-sky-200">
+            Session scope
+          </p>
+          <h2 className="mt-2 text-lg font-semibold tracking-tight text-slate-950 dark:text-white">
+            {title}
+          </h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
+            The next generated question will stay inside the selected syllabus
+            areas until you change the selection.
+          </p>
+        </div>
+
+        <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
+          {selectedSubtopics.length} selected
+        </span>
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {visibleSubtopics.map((subtopic) => (
+          <span
+            className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
+            key={subtopic.id}
+            title={`${subtopic.moduleLabel} / ${subtopic.topicName} / ${subtopic.name}`}
+          >
+            {subtopic.name}
+          </span>
+        ))}
+        {remainingSubtopicCount > 0 ? (
+          <span className="inline-flex rounded-full border border-dashed border-slate-300 px-3 py-1 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+            +{remainingSubtopicCount} more
+          </span>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 type PracticeWorkspaceReadyStateProps = {
   hasSelectedTopics: boolean;
-  selectedTopicCount: number;
+  canGenerate: boolean;
+  isGeneratingQuestion: boolean;
+  selectedSubtopics: WorkspaceSelectedSubtopic[];
+  onGenerateQuestion: () => void;
 };
 
 function PracticeWorkspaceReadyState({
   hasSelectedTopics,
-  selectedTopicCount,
+  canGenerate,
+  isGeneratingQuestion,
+  selectedSubtopics,
+  onGenerateQuestion,
 }: PracticeWorkspaceReadyStateProps) {
+  const selectedTopicCount = selectedSubtopics.length;
+  const selectedTopicLabel =
+    selectedTopicCount === 1
+      ? selectedSubtopics[0]?.name ?? "your selected subtopic"
+      : `${selectedTopicCount} selected subtopics`;
+
   return (
     <section className="flex min-h-[360px] flex-1 items-center">
       <div className="w-full rounded-[24px] border border-dashed border-slate-300 bg-white px-6 py-10 text-center shadow-sm dark:border-slate-700 dark:bg-slate-900">
         <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-sky-700 dark:text-sky-200">
-          Ready
+          Next step
         </p>
         <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">
-          Select topics and generate a question to start the session feed.
+          {hasSelectedTopics
+            ? "Generate your first question."
+            : "Choose a syllabus area to get started."}
         </h2>
         <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-slate-600 dark:text-slate-300">
           {hasSelectedTopics
-            ? `${selectedTopicCount} subtopic${
-                selectedTopicCount === 1 ? "" : "s"
-              } selected. Use the controls pane to generate the first Biology question.`
-            : "Use the syllabus pane to choose modules, topics, or subtopics first."}
+            ? `${selectedTopicLabel} ${
+                selectedTopicCount === 1 ? "is" : "are"
+              } ready. Generate a question to start the answer-and-improve flow.`
+            : "Use the syllabus rail to choose modules, topics, or subtopics first, then come back here to generate a question."}
         </p>
+
+        {hasSelectedTopics ? (
+          <div className="mt-6 flex justify-center">
+            <button
+              className={primaryButtonClass}
+              disabled={!canGenerate}
+              onClick={onGenerateQuestion}
+              type="button"
+            >
+              {isGeneratingQuestion ? "Generating..." : "Generate your first question"}
+            </button>
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -785,9 +930,6 @@ function CompletedPracticeThread({
             <span className="font-semibold text-slate-950 dark:text-white">
               {finalAttempt.feedback.score}/{finalAttempt.feedback.maxScore}
             </span>
-            {finalAttempt.feedback.level !== null
-              ? ` · Level ${finalAttempt.feedback.level}`
-              : ""}
           </span>
         ) : null}
         <span>Attempts: {thread.attempts.length}</span>
@@ -914,9 +1056,6 @@ function ThreadTurn({ attempt }: ThreadTurnProps) {
         headerTrailing={
           <span className="inline-flex rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
             {attempt.feedback.score}/{attempt.feedback.maxScore}
-            {attempt.feedback.level !== null
-              ? ` · Level ${attempt.feedback.level}`
-              : ""}
           </span>
         }
         tone="feedback"
@@ -938,7 +1077,6 @@ function ThreadTurn({ attempt }: ThreadTurnProps) {
           {partialItems.length > 0 ? (
             <RubricAssessmentSection
               items={partialItems}
-              showReason
               status="partial"
               title="Partial"
             />
@@ -964,11 +1102,6 @@ function ReviewScoreSection({ feedback }: ReviewScoreSectionProps) {
         <p className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">
           {feedback.score}/{feedback.maxScore}
         </p>
-        {feedback.level !== null ? (
-          <span className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
-            Level {feedback.level}
-          </span>
-        ) : null}
       </div>
     </section>
   );
@@ -979,7 +1112,6 @@ type RubricAssessmentSectionProps = {
   items: RubricAssessmentItem[];
   status: RubricAssessmentItem["status"];
   emptyMessage?: string;
-  showReason?: boolean;
 };
 
 function RubricAssessmentSection({
@@ -987,7 +1119,6 @@ function RubricAssessmentSection({
   items,
   status,
   emptyMessage,
-  showReason = false,
 }: RubricAssessmentSectionProps) {
   return (
     <section className="space-y-3">
@@ -1006,7 +1137,6 @@ function RubricAssessmentSection({
             <RubricAssessmentRow
               item={item}
               key={`${item.pointText}-${index}`}
-              showReason={showReason}
               status={status}
             />
           ))}
@@ -1036,14 +1166,9 @@ function CompactMissingList({ items }: { items: RubricAssessmentItem[] }) {
 type RubricAssessmentRowProps = {
   item: RubricAssessmentItem;
   status: RubricAssessmentItem["status"];
-  showReason: boolean;
 };
 
-function RubricAssessmentRow({
-  item,
-  status,
-  showReason,
-}: RubricAssessmentRowProps) {
+function RubricAssessmentRow({ item, status }: RubricAssessmentRowProps) {
   const surfaceClass =
     status === "present"
       ? "border-emerald-200 bg-emerald-50/55 dark:border-emerald-500/30 dark:bg-emerald-500/10"
@@ -1063,14 +1188,6 @@ function RubricAssessmentRow({
                 Evidence:
               </span>{" "}
               {item.evidence}
-            </p>
-          ) : null}
-          {showReason ? (
-            <p className="text-sm leading-6 text-slate-700 dark:text-slate-300">
-              <span className="font-semibold text-slate-900 dark:text-white">
-                Reason:
-              </span>{" "}
-              {item.reason}
             </p>
           ) : null}
         </div>
@@ -1443,7 +1560,6 @@ function isGenerateQuestionResponse(
     typeof body.subtopicId === "string" &&
     typeof body.subtopicLabel === "string" &&
     typeof body.answerFocus === "string" &&
-    isPracticeMarkingStyle(body.markingStyle) &&
     Array.isArray(body.rubricPoints) &&
     body.rubricPoints.every((point) => {
       return (
@@ -1451,18 +1567,6 @@ function isGenerateQuestionResponse(
         typeof point.id === "number" &&
         typeof point.pointText === "string" &&
         typeof point.orderNumber === "number"
-      );
-    }) &&
-    Array.isArray(body.levelDescriptors) &&
-    body.levelDescriptors.every((descriptor) => {
-      return (
-        isRecord(descriptor) &&
-        typeof descriptor.levelNumber === "number" &&
-        typeof descriptor.minMark === "number" &&
-        typeof descriptor.maxMark === "number" &&
-        typeof descriptor.descriptorText === "string" &&
-        (descriptor.communicationRequirement === null ||
-          typeof descriptor.communicationRequirement === "string")
       );
     })
   );
@@ -1473,16 +1577,13 @@ function isMarkAnswerResponse(body: unknown): body is MarkAnswerResponse {
     isRecord(body) &&
     typeof body.score === "number" &&
     typeof body.maxScore === "number" &&
-    (body.level === null || typeof body.level === "number") &&
-    (body.levelReasoning === null || typeof body.levelReasoning === "string") &&
     Array.isArray(body.rubricAssessment) &&
     body.rubricAssessment.every((assessment) => {
       return (
         isRecord(assessment) &&
         typeof assessment.pointText === "string" &&
         isRubricAssessmentStatus(assessment.status) &&
-        typeof assessment.evidence === "string" &&
-        typeof assessment.reason === "string"
+        typeof assessment.evidence === "string"
       );
     }) &&
     isRecord(body.feedback) &&
@@ -1492,10 +1593,6 @@ function isMarkAnswerResponse(body: unknown): body is MarkAnswerResponse {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function isPracticeMarkingStyle(value: unknown): value is "points" | "levels" {
-  return value === "points" || value === "levels";
 }
 
 function isRubricAssessmentStatus(

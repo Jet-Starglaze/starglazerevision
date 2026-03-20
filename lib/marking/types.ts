@@ -1,14 +1,10 @@
 import type {
   ApiErrorResponse,
   MarkAnswerResponse,
-  PracticeLevelDescriptor,
-  PracticeMarkingStyle,
+  PracticeRubricPoint,
   PracticeRubricAssessment,
   PracticeStructuredFeedback,
 } from "@/lib/mock-biology-practice-api";
-import type { GeneratedMarkingRubricPoint } from "@/lib/generated-practice-content";
-
-export type MarkingMode = PracticeMarkingStyle;
 
 export type PreparedMarkingInput = {
   generatedQuestionId: number;
@@ -16,10 +12,7 @@ export type PreparedMarkingInput = {
   questionText: string;
   marks: number;
   questionType: string;
-  markingStyle: MarkingMode;
-  answerFocus: string;
-  rubricPoints: GeneratedMarkingRubricPoint[];
-  levelDescriptors: PracticeLevelDescriptor[];
+  rubricPoints: PracticeRubricPoint[];
 };
 
 export type RubricAssessmentItem = PracticeRubricAssessment;
@@ -27,12 +20,6 @@ export type RubricAssessmentItem = PracticeRubricAssessment;
 export type PointsModeModelResponse = {
   rubricAssessment: RubricAssessmentItem[];
   feedback: PracticeStructuredFeedback;
-};
-
-export type LevelsModeModelResponse = PointsModeModelResponse & {
-  recommendedLevel: number;
-  recommendedMark: number;
-  levelReasoning: string;
 };
 
 export type FinalMarkingResult = MarkAnswerResponse;
@@ -45,11 +32,33 @@ export type MarkingPrompt = {
 export type ModelOutput = {
   modelName: string;
   rawOutput: string;
+  durationMs: number;
+  maxCompletionTokens: number;
+  completionTokensUsed: number | null;
+  finishReason: string | null;
+};
+
+export type MarkingDiagnostics = {
+  modelName: string | null;
+  modelMaxTokens: number | null;
+  completionTokensUsed: number | null;
+  finishReason: string | null;
+  questionTextChars: number;
+  answerTextChars: number;
+  promptChars: number;
+  rubricPointCount: number;
+  promptBuildMs: number | null;
+  modelMs: number | null;
+  parseMs: number | null;
+  outputValidationMs: number | null;
+  scoringMs: number | null;
+  rawOutputChars: number | null;
 };
 
 export type MarkingApiResult<T> = {
   status: number;
   body: T | ApiErrorResponse;
+  meta?: MarkingDiagnostics;
 };
 
 export type ApiFailure = MarkingApiResult<never>;

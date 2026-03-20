@@ -3,7 +3,6 @@ import type {
   PracticeStructuredFeedback,
 } from "@/lib/mock-biology-practice-api";
 import type {
-  LevelsModeModelResponse,
   PointsModeModelResponse,
   PreparedMarkingInput,
   RubricAssessmentItem,
@@ -29,30 +28,6 @@ export function validatePointsModeResponse(
       input,
     ),
     feedback: normalizeFeedback(parsedRecord.feedback),
-  };
-}
-
-export function validateLevelsModeResponse(
-  parsedOutput: unknown,
-  input: PreparedMarkingInput,
-): LevelsModeModelResponse {
-  const parsedRecord = expectRecord(parsedOutput, "Model output must be an object");
-  const pointsModeResponse = validatePointsModeResponse(parsedRecord, input);
-
-  return {
-    ...pointsModeResponse,
-    recommendedLevel: normalizeRequiredInteger(
-      parsedRecord.recommendedLevel,
-      "recommendedLevel",
-    ),
-    recommendedMark: normalizeRequiredInteger(
-      parsedRecord.recommendedMark,
-      "recommendedMark",
-    ),
-    levelReasoning: normalizeRequiredString(
-      parsedRecord.levelReasoning,
-      "levelReasoning",
-    ),
   };
 }
 
@@ -83,16 +58,20 @@ function normalizeRubricAssessmentItem(
     "Each rubric assessment item must be an object",
   );
 
-  normalizeRequiredString(
+  const pointText = normalizeRequiredString(
     parsedRecord.pointText,
     `rubricAssessment[${index}].pointText`,
   );
 
   if (
-    parsedRecord.pointIndex !== undefined &&
-    (!isInteger(parsedRecord.pointIndex) || parsedRecord.pointIndex !== index + 1)
+    !isInteger(parsedRecord.pointIndex) ||
+    parsedRecord.pointIndex !== index + 1
   ) {
     throw new Error("Rubric assessment pointIndex must match rubric order");
+  }
+
+  if (pointText !== expectedPointText.trim()) {
+    throw new Error("Rubric assessment pointText must exactly match the rubric point");
   }
 
   const status = normalizeRubricAssessmentStatus(parsedRecord.status);
@@ -105,10 +84,6 @@ function normalizeRubricAssessmentItem(
     parsedRecord.evidence,
     `rubricAssessment[${index}].evidence`,
   );
-  const reason = normalizeRequiredString(
-    parsedRecord.reason,
-    `rubricAssessment[${index}].reason`,
-  );
 
   if (status === "absent" && evidence.length > 0) {
     throw new Error("Absent rubric points must not include evidence");
@@ -118,11 +93,17 @@ function normalizeRubricAssessmentItem(
     throw new Error("Present or partial rubric points must include evidence");
   }
 
+  if (
+    status === "partial" &&
+    evidence.trim().toLowerCase() === expectedPointText.trim().toLowerCase()
+  ) {
+    throw new Error("Partial rubric points must not restate the full rubric point verbatim");
+  }
+
   return {
-    pointText: expectedPointText,
+    pointText,
     status,
     evidence,
-    reason,
   };
 }
 
@@ -154,36 +135,6 @@ function normalizeOptionalString(value: unknown, fieldName: string) {
   }
 
   return value.trim();
-}
-
-function normalizeRequiredInteger(value: unknown, fieldName: string) {
-  const normalizedValue = normalizeIntegerLike(value);
-
-  if (normalizedValue === null) {
-    throw new Error(`${fieldName} must be an integer`);
-  }
-
-  return normalizedValue;
-}
-
-function normalizeIntegerLike(value: unknown) {
-  if (isInteger(value)) {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    const match = value.trim().match(/\d+/);
-
-    if (match) {
-      const parsedValue = Number(match[0]);
-
-      if (isInteger(parsedValue)) {
-        return parsedValue;
-      }
-    }
-  }
-
-  return null;
 }
 
 function normalizeRubricAssessmentStatus(

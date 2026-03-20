@@ -1,6 +1,9 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import {
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import type {
   PracticeModule,
   PracticeSubtopic,
@@ -13,6 +16,8 @@ type PracticeSidebarProps = {
   selectedSubtopicIds: ReadonlySet<number>;
   expandedModuleIds: number[];
   expandedTopicIds: number[];
+  isCollapsed?: boolean;
+  onToggleCollapsed?: () => void;
   onToggleExpandedModule: (moduleId: number) => void;
   onToggleExpandedTopic: (topicId: number) => void;
   onToggleModuleSelection: (moduleId: number) => void;
@@ -34,6 +39,8 @@ export default function PracticeSidebar({
   selectedSubtopicIds,
   expandedModuleIds,
   expandedTopicIds,
+  isCollapsed = false,
+  onToggleCollapsed,
   onToggleExpandedModule,
   onToggleExpandedTopic,
   onToggleModuleSelection,
@@ -43,50 +50,106 @@ export default function PracticeSidebar({
   className,
   onClose,
 }: PracticeSidebarProps) {
+  if (isCollapsed) {
+    return (
+      <aside className={`${asideClassName} ${className ?? ""}`}>
+        <div className={panelClassName}>
+          <div className="flex h-full min-h-0 flex-col items-center px-3 py-5">
+            <button
+              aria-expanded="false"
+              aria-label="Expand syllabus"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
+              onClick={onToggleCollapsed}
+              type="button"
+            >
+              <PanelExpandIcon className="h-4 w-4" />
+            </button>
+
+            <div className="mt-5 flex flex-col items-center gap-3 text-center">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-sky-700 dark:text-sky-200">
+                Syllabus
+              </p>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium leading-5 text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+                {selectedSubtopicIds.size} selected
+              </div>
+            </div>
+
+            <p className="mt-4 text-center text-xs leading-5 text-slate-500 dark:text-slate-400">
+              Reopen the rail to change topics.
+            </p>
+
+            <div className="mt-auto pt-4">
+              <span className="inline-flex h-10 min-w-10 items-center justify-center rounded-full bg-sky-50 px-3 text-sm font-semibold text-sky-700 dark:bg-sky-500/10 dark:text-sky-200">
+                {selectedSubtopicIds.size}
+              </span>
+            </div>
+          </div>
+        </div>
+      </aside>
+    );
+  }
+
+  const headerAction = onClose ? (
+    <button
+      aria-label="Close syllabus"
+      className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
+      onClick={onClose}
+      type="button"
+    >
+      <CloseIcon className="h-4 w-4" />
+    </button>
+  ) : onToggleCollapsed ? (
+    <button
+      aria-expanded="true"
+      aria-label="Collapse syllabus"
+      className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
+      onClick={onToggleCollapsed}
+      type="button"
+    >
+      <PanelCollapseIcon className="h-4 w-4" />
+    </button>
+  ) : null;
+
   return (
     <aside className={`${asideClassName} ${className ?? ""}`}>
       <div className={panelClassName}>
-        <div className="flex items-start justify-between gap-3 px-4 pt-4">
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-700 dark:text-sky-200">
-              Syllabus
-            </p>
-            <h2 className="mt-1.5 text-base font-semibold tracking-tight text-slate-950 dark:text-white">
-              {subjectName}
-            </h2>
-            <p className="mt-1.5 text-sm leading-5 text-slate-600 dark:text-slate-300">
-              Choose the parts of the syllabus you want this session to draw
-              from.
-            </p>
+        <div className="border-b border-slate-200 px-5 pb-4 pt-5 dark:border-slate-800">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 space-y-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-700 dark:text-sky-200">
+                Syllabus
+              </p>
+              <div className="space-y-2">
+                <h2 className="text-base font-semibold tracking-tight text-slate-950 dark:text-white">
+                  {subjectName}
+                </h2>
+                <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
+                  Choose the subtopics this session should draw from, then
+                  generate a question when you are ready to write.
+                </p>
+              </div>
+            </div>
+
+            <div className="shrink-0">{headerAction}</div>
           </div>
 
-          {onClose ? (
+          <div className="mt-5 flex items-center justify-between gap-3">
+            <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+              {selectedSubtopicIds.size} selected
+            </span>
             <button
-              aria-label="Close syllabus"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
-              onClick={onClose}
+              className="text-sm font-semibold text-slate-700 transition hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-200 dark:hover:text-sky-200"
+              disabled={selectedSubtopicIds.size === 0}
+              onClick={onClearSelection}
               type="button"
             >
-              <CloseIcon className="h-4 w-4" />
+              Clear all
             </button>
-          ) : null}
+          </div>
         </div>
 
-        <div className="mt-3 flex items-center justify-between gap-3 border-b border-slate-200 px-4 pb-3 text-sm dark:border-slate-800">
-          <span className="text-slate-500 dark:text-slate-400">
-            {selectedSubtopicIds.size} selected
-          </span>
-          <button
-            className="font-semibold text-slate-700 transition hover:text-sky-700 dark:text-slate-200 dark:hover:text-sky-200"
-            onClick={onClearSelection}
-            type="button"
-          >
-            Clear all
-          </button>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-3">
-          <div className="space-y-2">
+        <div className="min-h-0 flex-1 overflow-y-auto px-3.5 pb-5 pt-4">
+          <div className="space-y-3">
             {modules.map((module, index) => {
               const moduleSubtopicIds = getModuleSubtopicIds(module);
               const moduleSelectionState = getSelectionState(
@@ -107,7 +170,7 @@ export default function PracticeSidebar({
                   onToggleSelection={() => onToggleModuleSelection(module.id)}
                 >
                   {isModuleExpanded ? (
-                    <div className="ml-2 mt-2 space-y-1 border-l border-slate-200 pl-2 dark:border-slate-800">
+                    <div className="ml-3 mt-3 space-y-2 border-l border-slate-200 pl-3 dark:border-slate-800">
                       {module.topics.map((topic) => {
                         const topicSubtopicIds = getTopicSubtopicIds(topic);
                         const topicSelectionState = getSelectionState(
@@ -133,7 +196,7 @@ export default function PracticeSidebar({
                             topic={topic}
                           >
                             {isTopicExpanded ? (
-                              <div className="ml-3 mt-1 space-y-0.5 border-l border-slate-200 pl-2 dark:border-slate-800">
+                              <div className="ml-4 mt-2 space-y-1.5 border-l border-slate-200 pl-3 dark:border-slate-800">
                                 {topic.subtopics.map((subtopic) => (
                                   <SubtopicItem
                                     key={subtopic.id}
@@ -184,34 +247,45 @@ function ModuleSection({
   onToggleExpand,
   children,
 }: ModuleSectionProps) {
+  const isActive = checked || indeterminate;
+
   return (
     <section
-      className={`${isFirst ? "" : "border-t border-slate-200 pt-2 dark:border-slate-800"}`}
+      className={`${isFirst ? "" : "border-t border-slate-200 pt-3 dark:border-slate-800"}`}
     >
-      <div className="flex items-start gap-1 px-0.5">
-        <ExpandButton
-          expanded={expanded}
-          label={module.name}
-          onToggle={onToggleExpand}
-        />
-        <StyledCheckbox
-          checked={checked}
-          indeterminate={indeterminate}
-          label={`Select ${module.name}`}
-          onToggle={onToggleSelection}
-        />
+      <div
+        className={`rounded-2xl border px-2.5 py-2.5 transition ${
+          isActive
+            ? "border-sky-200 bg-sky-50/70 shadow-sm dark:border-sky-500/25 dark:bg-sky-500/10"
+            : "border-transparent bg-transparent hover:border-slate-200 hover:bg-slate-50 dark:hover:border-slate-800 dark:hover:bg-slate-900/60"
+        }`}
+      >
+        <div className="flex items-start gap-2">
+          <ExpandButton
+            expanded={expanded}
+            label={module.name}
+            onToggle={onToggleExpand}
+          />
+          <StyledCheckbox
+            checked={checked}
+            indeterminate={indeterminate}
+            label={`Select ${module.name}`}
+            onToggle={onToggleSelection}
+          />
         <button
           className="min-w-0 flex-1 text-left"
+          onMouseDown={preventPointerFocus}
           onClick={onToggleSelection}
           type="button"
         >
-          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">
-            {module.label}
-          </p>
-          <p className="mt-0.5 text-sm font-semibold tracking-tight text-slate-900 dark:text-white">
-            {module.name}
-          </p>
-        </button>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">
+              {module.label}
+            </p>
+            <p className="mt-1 text-sm font-semibold tracking-tight text-slate-900 dark:text-white">
+              {module.name}
+            </p>
+          </button>
+        </div>
       </div>
 
       {children}
@@ -241,15 +315,15 @@ function TopicRow({
   const isActive = checked || indeterminate;
 
   return (
-    <div className="space-y-0.5">
+    <div className="space-y-1.5">
       <div
-        className={`rounded-xl px-1 py-1 transition ${
+        className={`rounded-xl border px-2 py-2 transition ${
           isActive
-            ? "bg-slate-100 dark:bg-slate-800/80"
-            : "hover:bg-slate-100 dark:hover:bg-slate-800/60"
+            ? "border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900/90"
+            : "border-transparent hover:border-slate-200 hover:bg-slate-100 dark:hover:border-slate-800 dark:hover:bg-slate-900/70"
         }`}
       >
-        <div className="flex items-start gap-1">
+        <div className="flex items-start gap-2">
           <ExpandButton
             expanded={expanded}
             label={topic.name}
@@ -263,6 +337,7 @@ function TopicRow({
           />
           <button
             className="min-w-0 flex-1 pt-0.5 text-left"
+            onMouseDown={preventPointerFocus}
             onClick={onToggleSelection}
             type="button"
           >
@@ -286,8 +361,14 @@ type SubtopicItemProps = {
 
 function SubtopicItem({ subtopic, checked, onToggle }: SubtopicItemProps) {
   return (
-    <div className="rounded-lg px-1 py-1 transition hover:bg-slate-100 dark:hover:bg-slate-800/60">
-      <div className="flex items-start gap-1">
+    <div
+      className={`rounded-xl border px-2 py-2 transition ${
+        checked
+          ? "border-sky-200 bg-sky-50/80 shadow-sm dark:border-sky-500/25 dark:bg-sky-500/10"
+          : "border-transparent hover:border-slate-200 hover:bg-slate-100 dark:hover:border-slate-800 dark:hover:bg-slate-900/70"
+      }`}
+    >
+      <div className="flex items-start gap-2">
         <span aria-hidden="true" className="block h-7 w-7 shrink-0" />
         <StyledCheckbox
           checked={checked}
@@ -297,13 +378,14 @@ function SubtopicItem({ subtopic, checked, onToggle }: SubtopicItemProps) {
         />
         <button
           className="min-w-0 flex-1 text-left"
+          onMouseDown={preventPointerFocus}
           onClick={onToggle}
           type="button"
         >
           <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">
             {subtopic.code}
           </p>
-          <p className="mt-0.5 text-sm font-medium leading-5 tracking-tight text-slate-700 dark:text-slate-200">
+          <p className="mt-1 text-sm font-medium leading-5 tracking-tight text-slate-700 dark:text-slate-200">
             {subtopic.name}
           </p>
         </button>
@@ -323,6 +405,7 @@ function ExpandButton({ expanded, label, onToggle }: ExpandButtonProps) {
     <button
       aria-label={expanded ? `Collapse ${label}` : `Expand ${label}`}
       className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+      onMouseDown={preventPointerFocus}
       onClick={onToggle}
       type="button"
     >
@@ -346,28 +429,21 @@ function StyledCheckbox({
   label,
   onToggle,
 }: StyledCheckboxProps) {
-  const inputRef = useRef<HTMLInputElement>(null);
   const isActive = checked || indeterminate;
 
-  useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.indeterminate = indeterminate;
-    }
-  }, [indeterminate]);
-
   return (
-    <label className="mt-1 inline-flex shrink-0 cursor-pointer">
-      <input
-        ref={inputRef}
-        aria-label={label}
-        checked={checked}
-        className="peer sr-only"
-        onChange={onToggle}
-        type="checkbox"
-      />
+    <button
+      aria-checked={indeterminate ? "mixed" : checked}
+      aria-label={label}
+      className="mt-1 inline-flex shrink-0 cursor-pointer rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/70"
+      onClick={onToggle}
+      onMouseDown={preventPointerFocus}
+      role="checkbox"
+      type="button"
+    >
       <span
         aria-hidden="true"
-        className={`inline-flex h-[18px] w-[18px] items-center justify-center rounded-md border transition peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500/70 ${
+        className={`inline-flex h-[18px] w-[18px] items-center justify-center rounded-md border transition ${
           isActive
             ? "border-sky-500 bg-sky-600 text-white shadow-sm dark:border-sky-400 dark:bg-sky-500"
             : "border-slate-300 bg-slate-100 text-transparent hover:border-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:hover:border-slate-500"
@@ -379,7 +455,7 @@ function StyledCheckbox({
           <CheckIcon className="h-3 w-3" />
         ) : null}
       </span>
-    </label>
+    </button>
   );
 }
 
@@ -403,6 +479,10 @@ function getSelectionState(
     checked: selectedIds.length > 0 && selectedCount === selectedIds.length,
     indeterminate: selectedCount > 0 && selectedCount < selectedIds.length,
   };
+}
+
+function preventPointerFocus(event: ReactMouseEvent<HTMLElement>) {
+  event.preventDefault();
 }
 
 function ChevronIcon({ className }: { className?: string }) {
@@ -472,6 +552,51 @@ function CloseIcon({ className }: { className?: string }) {
     >
       <path
         d="m7.75 7.75 8.5 8.5m0-8.5-8.5 8.5"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function PanelCollapseIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path
+        d="M7.75 6.75h5.5m-5.5 5.25h5.5m-5.5 5.25h5.5m8-12.25v14.5"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+      <path
+        d="m17 12-2.75 2.75m2.75-2.75-2.75-2.75"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function PanelExpandIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path
+        d="M7 5v14m4-12.25 5.25 5.25L11 17.25"
         stroke="currentColor"
         strokeLinecap="round"
         strokeLinejoin="round"

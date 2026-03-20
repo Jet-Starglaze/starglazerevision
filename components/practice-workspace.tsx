@@ -42,6 +42,8 @@ export default function PracticeWorkspace({
   const [activeMobilePane, setActiveMobilePane] = useState<
     "syllabus" | "session" | null
   >(null);
+  const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] =
+    useState(false);
 
   const selectionTree = useMemo(() => {
     return buildPracticeSelectionTree(modules);
@@ -51,7 +53,7 @@ export default function PracticeWorkspace({
     return Array.from(selectedSubtopicIds);
   }, [selectedSubtopicIds]);
 
-  const practiceSessionKey = useMemo(() => {
+  const selectionKey = useMemo(() => {
     return [...selectedSubtopicIdList].sort((left, right) => left - right).join("|");
   }, [selectedSubtopicIdList]);
 
@@ -141,8 +143,12 @@ export default function PracticeWorkspace({
     setSelectedSubtopicIds(() => new Set());
   }
 
+  const desktopGridClass = isDesktopSidebarCollapsed
+    ? "xl:grid-cols-[4.75rem_minmax(0,1fr)]"
+    : "xl:grid-cols-[320px_minmax(0,1fr)]";
+
   return (
-    <div className="relative min-h-[calc(100dvh-8rem)] border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 sm:min-h-[calc(100dvh-7rem)] xl:min-h-[calc(100dvh-5.5rem)]">
+    <div className="relative min-h-[calc(100dvh-8rem)] border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 sm:min-h-[calc(100dvh-7rem)] xl:h-[calc(100dvh-5.5rem)] xl:min-h-0 xl:overflow-hidden">
       <div
         aria-hidden="true"
         className={`fixed inset-0 z-40 bg-slate-950/55 transition duration-300 xl:hidden ${
@@ -151,14 +157,20 @@ export default function PracticeWorkspace({
         onClick={() => setActiveMobilePane(null)}
       />
 
-      <div className="grid min-h-[calc(100dvh-8rem)] w-full xl:min-h-[calc(100dvh-5.5rem)] xl:grid-cols-[288px_minmax(0,1fr)]">
-        <div className="hidden xl:block">
+      <div
+        className={`grid min-h-[calc(100dvh-8rem)] w-full xl:h-full xl:min-h-0 ${desktopGridClass}`}
+      >
+        <div className="hidden xl:block xl:min-h-0">
           <PracticeSidebar
-            className="h-full min-h-[calc(100dvh-5.5rem)]"
+            className="h-full"
             expandedModuleIds={expandedModuleIds}
             expandedTopicIds={expandedTopicIds}
+            isCollapsed={isDesktopSidebarCollapsed}
             modules={modules}
             onClearSelection={clearSelection}
+            onToggleCollapsed={() =>
+              setIsDesktopSidebarCollapsed((currentValue) => !currentValue)
+            }
             onToggleExpandedModule={toggleExpandedModule}
             onToggleExpandedTopic={toggleExpandedTopic}
             onToggleModuleSelection={toggleModuleSelection}
@@ -170,11 +182,11 @@ export default function PracticeWorkspace({
         </div>
 
         <PracticeWorkspaceShell
-          key={practiceSessionKey}
           isSessionPanelOpen={activeMobilePane === "session"}
           onCloseSessionPanel={() => setActiveMobilePane(null)}
           onOpenSessionPanel={() => setActiveMobilePane("session")}
           onOpenSidebar={() => setActiveMobilePane("syllabus")}
+          selectionKey={selectionKey}
           selectedSubtopicIds={selectedSubtopicIdList}
           selectedSubtopics={selectedSubtopics}
           subjectName={subjectName}

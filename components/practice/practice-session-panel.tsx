@@ -87,7 +87,7 @@ export default function PracticeSessionPanel({
   onClose,
   onCollapse,
 }: PracticeSessionPanelProps) {
-  const visibleTopics = selectedSubtopics.slice(0, 6);
+  const visibleTopics = selectedSubtopics.slice(0, 5);
   const remainingTopicCount = Math.max(
     selectedSubtopics.length - visibleTopics.length,
     0,
@@ -109,41 +109,43 @@ export default function PracticeSessionPanel({
   return (
     <aside className="h-full min-h-0 bg-white dark:bg-slate-950">
       <div className={shellClassName}>
-        <div className="flex items-start justify-between gap-3 px-4 pt-4">
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-700 dark:text-sky-200">
-              Session
-            </p>
-            <h2 className="mt-1.5 text-base font-semibold tracking-tight text-slate-950 dark:text-white">
-              Practice controls
-            </h2>
-            <p className="mt-1.5 text-sm leading-5 text-slate-600 dark:text-slate-300">
-              Set the next question, then tuck this panel away while you write.
-            </p>
-          </div>
+        <div className="shrink-0 border-b border-slate-200 px-4 pb-4 pt-5 dark:border-slate-800">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-700 dark:text-sky-200">
+                Session
+              </p>
+              <h2 className="mt-1.5 text-base font-semibold tracking-tight text-slate-950 dark:text-white">
+                Practice controls
+              </h2>
+              <p className="mt-1.5 text-sm leading-5 text-slate-600 dark:text-slate-300">
+                Set the next question, then keep writing in the main workspace.
+              </p>
+            </div>
 
-          {onClose ? (
-            <button
-              aria-label="Close session panel"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
-              onClick={onClose}
-              type="button"
-            >
-              <CloseIcon className="h-4 w-4" />
-            </button>
-          ) : onCollapse ? (
-            <button
-              aria-label="Collapse session panel"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
-              onClick={onCollapse}
-              type="button"
-            >
-              <PanelCollapseIcon className="h-4 w-4" />
-            </button>
-          ) : null}
+            {onClose ? (
+              <button
+                aria-label="Close session panel"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
+                onClick={onClose}
+                type="button"
+              >
+                <CloseIcon className="h-4 w-4" />
+              </button>
+            ) : onCollapse ? (
+              <button
+                aria-label="Collapse session panel"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
+                onClick={onCollapse}
+                type="button"
+              >
+                <PanelCollapseIcon className="h-4 w-4" />
+              </button>
+            ) : null}
+          </div>
         </div>
 
-        <div className="mt-3 min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pb-4">
+        <div className="shrink-0 space-y-4 px-4 py-4">
           <section className={sectionClassName}>
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm font-semibold text-slate-900 dark:text-white">
@@ -161,47 +163,6 @@ export default function PracticeSessionPanel({
                 Target reached. Keep practicing or reset for a fresh run.
               </p>
             ) : null}
-          </section>
-
-          <section className="space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                Selected topics
-              </h3>
-              <span className="text-xs text-slate-500 dark:text-slate-400">
-                {selectedSubtopics.length} selected
-              </span>
-            </div>
-
-            {selectedSubtopics.length > 0 ? (
-              <div className={sectionClassName}>
-                <div className="flex flex-wrap gap-2">
-                  {visibleTopics.map((subtopic) => (
-                    <span
-                      className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
-                      key={subtopic.id}
-                      title={`${subtopic.moduleLabel} / ${subtopic.topicName} / ${subtopic.name}`}
-                    >
-                      {subtopic.name}
-                    </span>
-                  ))}
-                  {remainingTopicCount > 0 ? (
-                    <span className="inline-flex rounded-full border border-dashed border-slate-300 px-3 py-1 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                      +{remainingTopicCount} more
-                    </span>
-                  ) : null}
-                </div>
-                <p className="text-xs leading-5 text-slate-500 dark:text-slate-400">
-                  The generator only uses the subtopics currently selected in
-                  the syllabus pane.
-                </p>
-              </div>
-            ) : (
-              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm leading-6 text-slate-600 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-300">
-                Select one or more subtopics from the syllabus pane to build a
-                practice session.
-              </div>
-            )}
           </section>
 
           <section className="space-y-3">
@@ -261,21 +222,6 @@ export default function PracticeSessionPanel({
             </div>
           </section>
 
-          {generationError ? (
-            <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
-              {generationError}
-            </div>
-          ) : null}
-
-          {shouldShowDraftNotice ? (
-            <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
-              Generating another question will replace the current draft in the
-              answer box.
-            </p>
-          ) : null}
-        </div>
-
-        <div className="border-t border-slate-200 px-4 py-4 dark:border-slate-800">
           <div className="flex flex-col gap-3">
             <button
               className={primaryButtonClass}
@@ -295,6 +241,62 @@ export default function PracticeSessionPanel({
               Reset session
             </button>
           </div>
+
+          {generationError ? (
+            <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+              {generationError}
+            </div>
+          ) : null}
+
+          {shouldShowDraftNotice ? (
+            <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
+              Generating another question will replace the current draft in the
+              answer box.
+            </p>
+          ) : null}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto border-t border-slate-200 px-4 pb-4 pt-4 dark:border-slate-800">
+          <section className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                Selected topics
+              </h3>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                {selectedSubtopics.length} selected
+              </span>
+            </div>
+
+            {selectedSubtopics.length > 0 ? (
+              <div className={sectionClassName}>
+                <div className="flex flex-wrap gap-2">
+                  {visibleTopics.map((subtopic) => (
+                    <span
+                      className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                      key={subtopic.id}
+                      title={`${subtopic.moduleLabel} / ${subtopic.topicName} / ${subtopic.name}`}
+                    >
+                      {subtopic.name}
+                    </span>
+                  ))}
+                  {remainingTopicCount > 0 ? (
+                    <span className="inline-flex rounded-full border border-dashed border-slate-300 px-3 py-1 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                      +{remainingTopicCount} more
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-3 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                  The generator only uses the subtopics currently selected in
+                  the syllabus rail.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm leading-6 text-slate-600 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-300">
+                Select one or more subtopics from the syllabus rail to build a
+                practice session.
+              </div>
+            )}
+          </section>
         </div>
       </div>
     </aside>
