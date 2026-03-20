@@ -103,7 +103,7 @@ function createModelClientOrError(
   try {
     return createModelClient();
   } catch (caughtError) {
-    const safeErrorMessage = getSafeModelClientErrorMessage(caughtError);
+    const safeErrorMessage = getSafeModelClientErrorMessage();
 
     console.error("[api/mark-answer] OpenRouter configuration missing", {
       generatedQuestionId: input.generatedQuestionId,
