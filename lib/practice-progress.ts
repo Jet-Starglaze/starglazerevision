@@ -1,0 +1,772 @@
+import type { PracticeRubricAssessment } from "@/lib/mock-biology-practice-api";
+import {
+  toNumericId,
+  type GeneratedMarkingRubricPoint,
+  type SupabaseServerClient,
+} from "@/lib/generated-practice-content";
+
+type GeneratedQuestionAttemptRow = {
+  generated_question_id: number | string;
+  subtopic_id: number | string;
+  attempt_number: number;
+  score: number;
+  max_score: number;
+  created_at: string | null;
+};
+
+type ExistingQuestionProgressRow = {
+  times_seen: number | null;
+  completed_at: string | null;
+};
+
+export type UserQuestionProgressSnapshot = {
+  generated_question_id: number | string;
+  best_score: number | null;
+  max_score: number | null;
+  last_attempted_at: string | null;
+};
+
+type UserQuestionProgressUpdate = {
+  user_id: string;
+  generated_question_id: number;
+  subtopic_id: number;
+  attempts_total: number;
+  best_score: number;
+  max_score: number;
+  last_score: number;
+  completed: boolean;
+  completed_at: string | null;
+  last_attempted_at: string;
+  times_seen: number;
+};
+
+type UserSubtopicProgressUpdate = {
+  user_id: string;
+  subtopic_id: number;
+  questions_seen: number;
+  questions_completed: number;
+  total_attempts: number;
+  total_score: number;
+  total_max_score: number;
+  avg_score_ratio: number;
+  avg_attempts_per_question: number;
+  mastery_band: PracticeMasteryBand;
+  last_practised_at: string;
+};
+
+type QuestionAttemptSummary = {
+  attemptsTotal: number;
+  bestScore: number;
+  latestAttemptAt: string | null;
+  latestMaxScore: number;
+};
+
+type UserRequiredAreaProgressRow = {
+  required_area: string;
+  times_tested: number | null;
+  times_present: number | null;
+  times_partial: number | null;
+  times_absent: number | null;
+};
+
+type UserRequiredAreaProgressUpdate = {
+  user_id: string;
+  subtopic_id: number;
+  required_area: string;
+  times_tested: number;
+  times_present: number;
+  times_partial: number;
+  times_absent: number;
+  mastery_ratio: number;
+  mastery_band: PracticeMasteryBand;
+  last_practised_at: string;
+};
+
+type RequiredAreaProgressIncrement = {
+  requiredArea: string;
+  timesTested: number;
+  timesPresent: number;
+  timesPartial: number;
+  timesAbsent: number;
+};
+
+export type PracticeMasteryBand = "weak" | "developing" | "strong";
+
+export async function getAuthenticatedUserId(
+  supabase: SupabaseServerClient,
+): Promise<string | null> {
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+
+  if (error) {
+    throw new Error(`Failed to load authenticated user: ${error.message}`);
+  }
+
+  return user?.id ?? null;
+}
+
+export function getPracticeCompletionThreshold(maxScore: number) {
+  return maxScore <= 3 ? maxScore : maxScore - 1;
+}
+
+export function hasReachedPracticeCompletionThreshold(
+  score: number,
+  maxScore: number,
+) {
+  return score >= getPracticeCompletionThreshold(maxScore);
+}
+
+export async function fetchUserQuestionProgressForQuestions(
+  supabase: SupabaseServerClient,
+  userId: string,
+  generatedQuestionIds: Array<number | string>,
+): Promise<UserQuestionProgressSnapshot[]> {
+  const normalizedQuestionIds = uniqueNumericIds(generatedQuestionIds);
+
+  if (normalizedQuestionIds.length === 0) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("user_question_progress")
+    .select("generated_question_id, best_score, max_score, last_attempted_at")
+    .eq("user_id", userId)
+    .in("generated_question_id", normalizedQuestionIds);
+
+  if (error) {
+    throw new Error(`Failed to load user question progress: ${error.message}`);
+  }
+
+  return (data ?? []) as UserQuestionProgressSnapshot[];
+}
+
+export async function recordGeneratedQuestionAttemptAndProgress({
+  supabase,
+  userId,
+  generatedQuestionId,
+  subtopicId,
+  attemptNumber,
+  score,
+  maxScore,
+  answerText,
+}: {
+  supabase: SupabaseServerClient;
+  userId: string;
+  generatedQuestionId: number | string;
+  subtopicId: number | string;
+  attemptNumber: number | null;
+  score: number;
+  maxScore: number;
+  answerText: string;
+}) {
+  const normalizedQuestionId = toNumericId(generatedQuestionId);
+  const normalizedSubtopicId = toNumericId(subtopicId);
+  const resolvedAttemptNumber =
+    attemptNumber ??
+    (await getNextAttemptNumber(supabase, userId, normalizedQuestionId));
+
+  await ensureAttemptRecorded({
+    supabase,
+    userId,
+    generatedQuestionId: normalizedQuestionId,
+    subtopicId: normalizedSubtopicId,
+    attemptNumber: resolvedAttemptNumber,
+    score,
+    maxScore,
+    answerText,
+  });
+
+  const [existingQuestionProgress, questionAttempts] = await Promise.all([
+    fetchExistingQuestionProgress(
+      supabase,
+      userId,
+      normalizedQuestionId,
+    ),
+    fetchQuestionAttempts(supabase, userId, normalizedQuestionId),
+  ]);
+
+  const questionProgressUpdate = buildUserQuestionProgressUpdate({
+    userId,
+    generatedQuestionId: normalizedQuestionId,
+    subtopicId: normalizedSubtopicId,
+    maxScore,
+    existingQuestionProgress,
+    questionAttempts,
+  });
+
+  await upsertUserQuestionProgress(supabase, questionProgressUpdate);
+
+  const subtopicAttempts = await fetchSubtopicAttempts(
+    supabase,
+    userId,
+    normalizedSubtopicId,
+  );
+  const subtopicProgressUpdate = buildUserSubtopicProgressUpdate({
+    userId,
+    subtopicId: normalizedSubtopicId,
+    attempts: subtopicAttempts,
+  });
+
+  await upsertUserSubtopicProgress(supabase, subtopicProgressUpdate);
+}
+
+export async function recordUserRequiredAreaProgress({
+  supabase,
+  userId,
+  subtopicId,
+  rubricPoints,
+  rubricAssessment,
+}: {
+  supabase: SupabaseServerClient;
+  userId: string;
+  subtopicId: number | string;
+  rubricPoints: GeneratedMarkingRubricPoint[];
+  rubricAssessment: PracticeRubricAssessment[];
+}) {
+  const normalizedSubtopicId = toNumericId(subtopicId);
+  const requiredAreaIncrements = buildRequiredAreaProgressIncrements(
+    rubricPoints,
+    rubricAssessment,
+  );
+
+  if (requiredAreaIncrements.length === 0) {
+    return;
+  }
+
+  const requiredAreas = requiredAreaIncrements.map(
+    (increment) => increment.requiredArea,
+  );
+  const lastPractisedAt = new Date().toISOString();
+
+  await ensureRequiredAreaProgressRowsExist({
+    supabase,
+    userId,
+    subtopicId: normalizedSubtopicId,
+    requiredAreas,
+    lastPractisedAt,
+  });
+
+  const existingProgressRows = await fetchRequiredAreaProgressRows({
+    supabase,
+    userId,
+    subtopicId: normalizedSubtopicId,
+    requiredAreas,
+  });
+  const existingProgressByRequiredArea = new Map(
+    existingProgressRows.map((row) => [row.required_area, row]),
+  );
+  const progressUpdates = requiredAreaIncrements.map((increment) => {
+    const existingProgress =
+      existingProgressByRequiredArea.get(increment.requiredArea) ?? null;
+    const timesTested =
+      (existingProgress?.times_tested ?? 0) + increment.timesTested;
+    const timesPresent =
+      (existingProgress?.times_present ?? 0) + increment.timesPresent;
+    const timesPartial =
+      (existingProgress?.times_partial ?? 0) + increment.timesPartial;
+    const timesAbsent =
+      (existingProgress?.times_absent ?? 0) + increment.timesAbsent;
+    const masteryRatio =
+      timesTested > 0 ? roundMetric(timesPresent / timesTested) : 0;
+
+    return {
+      user_id: userId,
+      subtopic_id: normalizedSubtopicId,
+      required_area: increment.requiredArea,
+      times_tested: timesTested,
+      times_present: timesPresent,
+      times_partial: timesPartial,
+      times_absent: timesAbsent,
+      mastery_ratio: masteryRatio,
+      mastery_band: getRequiredAreaMasteryBand(masteryRatio),
+      last_practised_at: lastPractisedAt,
+    };
+  });
+
+  const { error } = await supabase.from("user_required_area_progress").upsert(
+    progressUpdates,
+    {
+      onConflict: "user_id,subtopic_id,required_area",
+    },
+  );
+
+  if (error) {
+    throw new Error(`Failed to upsert required area progress: ${error.message}`);
+  }
+}
+
+async function getNextAttemptNumber(
+  supabase: SupabaseServerClient,
+  userId: string,
+  generatedQuestionId: number,
+) {
+  const { data, error } = await supabase
+    .from("generated_question_attempts")
+    .select("attempt_number")
+    .eq("user_id", userId)
+    .eq("generated_question_id", generatedQuestionId)
+    .order("attempt_number", { ascending: false })
+    .limit(1);
+
+  if (error) {
+    throw new Error(`Failed to load next attempt number: ${error.message}`);
+  }
+
+  return ((data?.[0]?.attempt_number as number | undefined) ?? 0) + 1;
+}
+
+async function ensureAttemptRecorded({
+  supabase,
+  userId,
+  generatedQuestionId,
+  subtopicId,
+  attemptNumber,
+  score,
+  maxScore,
+  answerText,
+}: {
+  supabase: SupabaseServerClient;
+  userId: string;
+  generatedQuestionId: number;
+  subtopicId: number;
+  attemptNumber: number;
+  score: number;
+  maxScore: number;
+  answerText: string;
+}) {
+  const { data: existingRows, error: existingError } = await supabase
+    .from("generated_question_attempts")
+    .select("score, max_score, answer_text")
+    .eq("user_id", userId)
+    .eq("generated_question_id", generatedQuestionId)
+    .eq("attempt_number", attemptNumber)
+    .limit(1);
+
+  if (existingError) {
+    throw new Error(`Failed to load existing attempt: ${existingError.message}`);
+  }
+
+  const existingAttempt = existingRows?.[0] ?? null;
+
+  if (existingAttempt) {
+    if (
+      existingAttempt.score !== score ||
+      existingAttempt.max_score !== maxScore ||
+      existingAttempt.answer_text !== answerText
+    ) {
+      console.warn("[practice-progress] Reused existing generated attempt", {
+        userId,
+        generatedQuestionId,
+        attemptNumber,
+      });
+    }
+
+    return;
+  }
+
+  const { error } = await supabase.from("generated_question_attempts").insert({
+    user_id: userId,
+    generated_question_id: generatedQuestionId,
+    subtopic_id: subtopicId,
+    attempt_number: attemptNumber,
+    score,
+    max_score: maxScore,
+    answer_text: answerText,
+  });
+
+  if (error) {
+    throw new Error(`Failed to insert generated attempt: ${error.message}`);
+  }
+}
+
+async function fetchExistingQuestionProgress(
+  supabase: SupabaseServerClient,
+  userId: string,
+  generatedQuestionId: number,
+) {
+  const { data, error } = await supabase
+    .from("user_question_progress")
+    .select("times_seen, completed_at")
+    .eq("user_id", userId)
+    .eq("generated_question_id", generatedQuestionId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to load question progress: ${error.message}`);
+  }
+
+  return (data ?? null) as ExistingQuestionProgressRow | null;
+}
+
+async function fetchQuestionAttempts(
+  supabase: SupabaseServerClient,
+  userId: string,
+  generatedQuestionId: number,
+) {
+  const { data, error } = await supabase
+    .from("generated_question_attempts")
+    .select(
+      "generated_question_id, subtopic_id, attempt_number, score, max_score, created_at",
+    )
+    .eq("user_id", userId)
+    .eq("generated_question_id", generatedQuestionId)
+    .order("attempt_number", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(`Failed to load question attempts: ${error.message}`);
+  }
+
+  return (data ?? []) as GeneratedQuestionAttemptRow[];
+}
+
+async function fetchSubtopicAttempts(
+  supabase: SupabaseServerClient,
+  userId: string,
+  subtopicId: number,
+) {
+  const { data, error } = await supabase
+    .from("generated_question_attempts")
+    .select(
+      "generated_question_id, subtopic_id, attempt_number, score, max_score, created_at",
+    )
+    .eq("user_id", userId)
+    .eq("subtopic_id", subtopicId)
+    .order("attempt_number", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(`Failed to load subtopic attempts: ${error.message}`);
+  }
+
+  return (data ?? []) as GeneratedQuestionAttemptRow[];
+}
+
+function buildUserQuestionProgressUpdate({
+  userId,
+  generatedQuestionId,
+  subtopicId,
+  maxScore,
+  existingQuestionProgress,
+  questionAttempts,
+}: {
+  userId: string;
+  generatedQuestionId: number;
+  subtopicId: number;
+  maxScore: number;
+  existingQuestionProgress: ExistingQuestionProgressRow | null;
+  questionAttempts: GeneratedQuestionAttemptRow[];
+}): UserQuestionProgressUpdate {
+  const orderedAttempts = [...questionAttempts].sort(compareAttempts);
+  const bestScore = orderedAttempts.reduce((currentBest, attempt) => {
+    return Math.max(currentBest, attempt.score);
+  }, 0);
+  const latestAttempt = orderedAttempts[orderedAttempts.length - 1];
+  const completionThreshold = getPracticeCompletionThreshold(maxScore);
+  const isCompleted = bestScore >= completionThreshold;
+  const firstCompletedAttempt = orderedAttempts.find((attempt) =>
+    hasReachedPracticeCompletionThreshold(attempt.score, maxScore),
+  );
+
+  return {
+    user_id: userId,
+    generated_question_id: generatedQuestionId,
+    subtopic_id: subtopicId,
+    attempts_total: orderedAttempts.length,
+    best_score: bestScore,
+    max_score: maxScore,
+    last_score: latestAttempt?.score ?? 0,
+    completed: isCompleted,
+    completed_at: isCompleted
+      ? existingQuestionProgress?.completed_at ??
+        firstCompletedAttempt?.created_at ??
+        null
+      : null,
+    last_attempted_at: latestAttempt?.created_at ?? new Date().toISOString(),
+    times_seen: Math.max(existingQuestionProgress?.times_seen ?? 1, 1),
+  };
+}
+
+async function upsertUserQuestionProgress(
+  supabase: SupabaseServerClient,
+  progressUpdate: UserQuestionProgressUpdate,
+) {
+  const { error } = await supabase.from("user_question_progress").upsert(
+    progressUpdate,
+    {
+      onConflict: "user_id,generated_question_id",
+    },
+  );
+
+  if (error) {
+    throw new Error(`Failed to upsert question progress: ${error.message}`);
+  }
+}
+
+function buildUserSubtopicProgressUpdate({
+  userId,
+  subtopicId,
+  attempts,
+}: {
+  userId: string;
+  subtopicId: number;
+  attempts: GeneratedQuestionAttemptRow[];
+}): UserSubtopicProgressUpdate {
+  const attemptsByQuestion = new Map<number, QuestionAttemptSummary>();
+  let totalScore = 0;
+  let totalMaxScore = 0;
+  let lastPractisedAt = attempts[0]?.created_at ?? new Date().toISOString();
+
+  for (const attempt of attempts) {
+    const questionId = toNumericId(attempt.generated_question_id);
+    const existingSummary = attemptsByQuestion.get(questionId);
+
+    totalScore += attempt.score;
+    totalMaxScore += attempt.max_score;
+
+    if (
+      attempt.created_at &&
+      (!lastPractisedAt || attempt.created_at > lastPractisedAt)
+    ) {
+      lastPractisedAt = attempt.created_at;
+    }
+
+    if (existingSummary) {
+      existingSummary.attemptsTotal += 1;
+      existingSummary.bestScore = Math.max(existingSummary.bestScore, attempt.score);
+      existingSummary.latestMaxScore = attempt.max_score;
+      existingSummary.latestAttemptAt =
+        maxIsoTimestamp(existingSummary.latestAttemptAt, attempt.created_at);
+      continue;
+    }
+
+    attemptsByQuestion.set(questionId, {
+      attemptsTotal: 1,
+      bestScore: attempt.score,
+      latestAttemptAt: attempt.created_at,
+      latestMaxScore: attempt.max_score,
+    });
+  }
+
+  const questionSummaries = [...attemptsByQuestion.values()];
+  const questionsSeen = questionSummaries.length;
+  const questionsCompleted = questionSummaries.reduce((count, question) => {
+    return (
+      count +
+      (hasReachedPracticeCompletionThreshold(
+        question.bestScore,
+        question.latestMaxScore,
+      )
+        ? 1
+        : 0)
+    );
+  }, 0);
+  const totalAttempts = attempts.length;
+  const avgScoreRatio =
+    totalMaxScore > 0 ? roundMetric(totalScore / totalMaxScore) : 0;
+  const avgAttemptsPerQuestion =
+    questionsSeen > 0 ? roundMetric(totalAttempts / questionsSeen) : 0;
+
+  return {
+    user_id: userId,
+    subtopic_id: subtopicId,
+    questions_seen: questionsSeen,
+    questions_completed: questionsCompleted,
+    total_attempts: totalAttempts,
+    total_score: totalScore,
+    total_max_score: totalMaxScore,
+    avg_score_ratio: avgScoreRatio,
+    avg_attempts_per_question: avgAttemptsPerQuestion,
+    mastery_band: getMasteryBand(avgScoreRatio),
+    last_practised_at: lastPractisedAt ?? new Date().toISOString(),
+  };
+}
+
+async function upsertUserSubtopicProgress(
+  supabase: SupabaseServerClient,
+  progressUpdate: UserSubtopicProgressUpdate,
+) {
+  const { error } = await supabase.from("user_subtopic_progress").upsert(
+    progressUpdate,
+    {
+      onConflict: "user_id,subtopic_id",
+    },
+  );
+
+  if (error) {
+    throw new Error(`Failed to upsert subtopic progress: ${error.message}`);
+  }
+}
+
+async function ensureRequiredAreaProgressRowsExist({
+  supabase,
+  userId,
+  subtopicId,
+  requiredAreas,
+  lastPractisedAt,
+}: {
+  supabase: SupabaseServerClient;
+  userId: string;
+  subtopicId: number;
+  requiredAreas: string[];
+  lastPractisedAt: string;
+}) {
+  const baseRows: UserRequiredAreaProgressUpdate[] = requiredAreas.map(
+    (requiredArea) => ({
+      user_id: userId,
+      subtopic_id: subtopicId,
+      required_area: requiredArea,
+      times_tested: 0,
+      times_present: 0,
+      times_partial: 0,
+      times_absent: 0,
+      mastery_ratio: 0,
+      mastery_band: "weak",
+      last_practised_at: lastPractisedAt,
+    }),
+  );
+
+  const { error } = await supabase.from("user_required_area_progress").upsert(
+    baseRows,
+    {
+      onConflict: "user_id,subtopic_id,required_area",
+      ignoreDuplicates: true,
+    },
+  );
+
+  if (error) {
+    throw new Error(`Failed to create required area progress rows: ${error.message}`);
+  }
+}
+
+async function fetchRequiredAreaProgressRows({
+  supabase,
+  userId,
+  subtopicId,
+  requiredAreas,
+}: {
+  supabase: SupabaseServerClient;
+  userId: string;
+  subtopicId: number;
+  requiredAreas: string[];
+}) {
+  const { data, error } = await supabase
+    .from("user_required_area_progress")
+    .select(
+      "required_area, times_tested, times_present, times_partial, times_absent",
+    )
+    .eq("user_id", userId)
+    .eq("subtopic_id", subtopicId)
+    .in("required_area", requiredAreas);
+
+  if (error) {
+    throw new Error(`Failed to load required area progress: ${error.message}`);
+  }
+
+  return (data ?? []) as UserRequiredAreaProgressRow[];
+}
+
+function getMasteryBand(avgScoreRatio: number): PracticeMasteryBand {
+  if (avgScoreRatio < 0.5) {
+    return "weak";
+  }
+
+  if (avgScoreRatio < 0.75) {
+    return "developing";
+  }
+
+  return "strong";
+}
+
+function getRequiredAreaMasteryBand(
+  masteryRatio: number,
+): PracticeMasteryBand {
+  if (masteryRatio < 0.4) {
+    return "weak";
+  }
+
+  if (masteryRatio < 0.75) {
+    return "developing";
+  }
+
+  return "strong";
+}
+
+function uniqueNumericIds(values: Array<number | string>) {
+  return Array.from(new Set(values.map((value) => toNumericId(value))));
+}
+
+function buildRequiredAreaProgressIncrements(
+  rubricPoints: GeneratedMarkingRubricPoint[],
+  rubricAssessment: PracticeRubricAssessment[],
+) {
+  const incrementsByRequiredArea = new Map<string, RequiredAreaProgressIncrement>();
+
+  rubricPoints.forEach((rubricPoint, index) => {
+    const requiredArea = rubricPoint.requiredArea?.trim() ?? "";
+
+    if (requiredArea.length === 0) {
+      return;
+    }
+
+    const assessment = rubricAssessment[index];
+
+    if (!assessment) {
+      return;
+    }
+
+    const currentIncrement = incrementsByRequiredArea.get(requiredArea) ?? {
+      requiredArea,
+      timesTested: 0,
+      timesPresent: 0,
+      timesPartial: 0,
+      timesAbsent: 0,
+    };
+
+    currentIncrement.timesTested += 1;
+
+    if (assessment.status === "present") {
+      currentIncrement.timesPresent += 1;
+    } else if (assessment.status === "partial") {
+      currentIncrement.timesPartial += 1;
+    } else {
+      currentIncrement.timesAbsent += 1;
+    }
+
+    incrementsByRequiredArea.set(requiredArea, currentIncrement);
+  });
+
+  return [...incrementsByRequiredArea.values()];
+}
+
+function compareAttempts(
+  left: GeneratedQuestionAttemptRow,
+  right: GeneratedQuestionAttemptRow,
+) {
+  if (left.attempt_number !== right.attempt_number) {
+    return left.attempt_number - right.attempt_number;
+  }
+
+  const leftCreatedAt = left.created_at ?? "";
+  const rightCreatedAt = right.created_at ?? "";
+
+  return leftCreatedAt.localeCompare(rightCreatedAt);
+}
+
+function maxIsoTimestamp(left: string | null, right: string | null) {
+  if (!left) {
+    return right;
+  }
+
+  if (!right) {
+    return left;
+  }
+
+  return left > right ? left : right;
+}
+
+function roundMetric(value: number) {
+  return Number(value.toFixed(4));
+}

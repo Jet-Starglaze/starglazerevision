@@ -24,6 +24,7 @@ export type PracticeRubricAssessment = {
 
 export type PracticeStructuredFeedback = {
   nextStep: string;
+  offTopicPoints?: string[];
 };
 
 export type GenerateQuestionRequest = {
@@ -31,6 +32,7 @@ export type GenerateQuestionRequest = {
   selectedSubtopicIds: number[];
   questionFilterMode: PracticeQuestionFilterMode;
   sessionLength: PracticeSessionLength;
+  excludeQuestionIds?: number[];
   questionCursor?: number;
 };
 
@@ -44,6 +46,7 @@ export type GenerateQuestionResponse = {
   subtopicId: string;
   subtopicLabel: string;
   answerFocus: string;
+  modelAnswer: string | null;
   rubricPoints: PracticeRubricPoint[];
 };
 

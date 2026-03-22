@@ -1,4 +1,5 @@
 import type { MarkAnswerResponse } from "@/lib/mock-biology-practice-api";
+import { finalizePointsModeResponse } from "@/lib/marking/feedback";
 import { buildPointsMarkingPrompt } from "@/lib/marking/prompts";
 import { requestMarkingModelOutput } from "@/lib/marking/openrouter";
 import { computePointsModeScore } from "@/lib/marking/scoring";
@@ -127,9 +128,13 @@ function validateAndScorePointsModeResponse(
   const validationResult = measureSync(() =>
     validatePointsModeResponse(parsedOutput, input),
   );
-  maybeWarnAboutDuplicateEvidence(validationResult.result, input);
+  const finalizedResponse = finalizePointsModeResponse(
+    validationResult.result,
+    input,
+  );
+  maybeWarnAboutDuplicateEvidence(finalizedResponse, input);
   const scoringResult = measureSync(() =>
-    scorePointsModeResponse(validationResult.result, input),
+    scorePointsModeResponse(finalizedResponse, input),
   );
 
   return {

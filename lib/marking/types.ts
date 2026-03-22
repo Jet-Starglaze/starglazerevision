@@ -1,18 +1,19 @@
 import type {
   ApiErrorResponse,
   MarkAnswerResponse,
-  PracticeRubricPoint,
   PracticeRubricAssessment,
   PracticeStructuredFeedback,
 } from "@/lib/mock-biology-practice-api";
+import type { GeneratedMarkingRubricPoint } from "@/lib/generated-practice-content";
 
 export type PreparedMarkingInput = {
   generatedQuestionId: number;
   answerText: string;
   questionText: string;
+  answerFocus: string;
   marks: number;
   questionType: string;
-  rubricPoints: PracticeRubricPoint[];
+  rubricPoints: GeneratedMarkingRubricPoint[];
 };
 
 export type RubricAssessmentItem = PracticeRubricAssessment;

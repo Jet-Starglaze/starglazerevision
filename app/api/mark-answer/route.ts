@@ -1,13 +1,20 @@
 import { NextResponse } from "next/server";
 import type {
   ApiErrorResponse,
+  MarkAnswerResponse,
 } from "@/lib/mock-biology-practice-api";
 import {
-  fetchGeneratedRubricPoints,
+  fetchGeneratedRubricPointsForMarking,
   fetchGeneratedQuestionById,
   normalizeNumericId,
+  type SupabaseServerClient,
 } from "@/lib/generated-practice-content";
 import { markAnswer, type PreparedMarkingInput } from "@/lib/marking";
+import {
+  getAuthenticatedUserId,
+  recordGeneratedQuestionAttemptAndProgress,
+  recordUserRequiredAreaProgress,
+} from "@/lib/practice-progress";
 import { createClient } from "@/utils/supabase/server";
 
 export const runtime = "nodejs";
@@ -29,6 +36,7 @@ type ValidMarkingRequest = {
 
 type LoadPreparedMarkingInputSuccess = {
   input: PreparedMarkingInput;
+  questionSubtopicId: number;
   meta: {
     dbQuestionMs: number;
     dbRubricMs: number;
@@ -37,8 +45,10 @@ type LoadPreparedMarkingInputSuccess = {
 };
 
 const SAFE_ERRORS = {
+  authRequired: "Authentication required.",
   questionNotFound: "Generated question not found.",
   markingCriteria: "Could not load marking criteria right now.",
+  progressWrite: "Could not save practice progress right now.",
 };
 
 export async function POST(request: Request) {
@@ -97,7 +107,23 @@ export async function POST(request: Request) {
     }
 
     generatedQuestionId = validRequest.generatedQuestionId;
-    const markingInputResult = await loadPreparedMarkingInputOrError(validRequest);
+    const supabase = await createClient();
+    const userId = await getAuthenticatedUserId(supabase);
+
+    if (!userId) {
+      responseStatus = 401;
+      const responseResult = createTimedJsonResponse(
+        { error: SAFE_ERRORS.authRequired },
+        { status: 401 },
+      );
+      responseSerializationMs = responseResult.ms;
+      return responseResult.result;
+    }
+
+    const markingInputResult = await loadPreparedMarkingInputOrError(
+      supabase,
+      validRequest,
+    );
 
     if (isApiFailure(markingInputResult)) {
       responseStatus = markingInputResult.status;
@@ -108,7 +134,11 @@ export async function POST(request: Request) {
       return responseResult.result;
     }
 
-    const { input: markingInput, meta: loadMeta } = markingInputResult;
+    const {
+      input: markingInput,
+      questionSubtopicId,
+      meta: loadMeta,
+    } = markingInputResult;
     rubricPointsCount = markingInput.rubricPoints.length;
     questionTextChars = markingInput.questionText.length;
     answerTextChars = markingInput.answerText.length;
@@ -130,6 +160,45 @@ export async function POST(request: Request) {
     scoringMs = result.meta?.scoringMs ?? null;
     promptChars = result.meta?.promptChars ?? null;
     rawOutputChars = result.meta?.rawOutputChars ?? null;
+
+    if (isSuccessfulMarkAnswerResult(result.body)) {
+      try {
+        await recordGeneratedQuestionAttemptAndProgress({
+          supabase,
+          userId,
+          generatedQuestionId: validRequest.generatedQuestionId,
+          subtopicId: questionSubtopicId,
+          attemptNumber: validRequest.attemptNumber,
+          score: result.body.score,
+          maxScore: result.body.maxScore,
+          answerText: markingInput.answerText,
+        });
+        await recordUserRequiredAreaProgress({
+          supabase,
+          userId,
+          subtopicId: questionSubtopicId,
+          rubricPoints: markingInput.rubricPoints,
+          rubricAssessment: result.body.rubricAssessment,
+        });
+      } catch (caughtError) {
+        console.error("[api/mark-answer] Failed to persist user progress", {
+          generatedQuestionId: validRequest.generatedQuestionId,
+          userId,
+          message:
+            caughtError instanceof Error
+              ? caughtError.message
+              : String(caughtError),
+        });
+
+        responseStatus = 500;
+        const responseResult = createTimedJsonResponse(
+          { error: SAFE_ERRORS.progressWrite },
+          { status: 500 },
+        );
+        responseSerializationMs = responseResult.ms;
+        return responseResult.result;
+      }
+    }
 
     const responseResult = createTimedJsonResponse(result.body, {
       status: result.status,
@@ -205,9 +274,9 @@ function validateMarkingRequest(
 }
 
 async function loadPreparedMarkingInputOrError(
+  supabase: SupabaseServerClient,
   request: ValidMarkingRequest,
 ): Promise<LoadPreparedMarkingInputSuccess | ApiFailure> {
-  const supabase = await createClient();
   const dbStartedAt = performance.now();
 
   try {
@@ -230,7 +299,7 @@ async function loadPreparedMarkingInputOrError(
     }
 
     const rubricResult = await measureAsync(() =>
-      fetchGeneratedRubricPoints(supabase, questionRow.id),
+      fetchGeneratedRubricPointsForMarking(supabase, questionRow.id),
     );
     const rubricPoints = rubricResult.result;
 
@@ -243,15 +312,28 @@ async function loadPreparedMarkingInputOrError(
       return createErrorResult(500, SAFE_ERRORS.markingCriteria);
     }
 
+    const questionSubtopicId = normalizeNumericId(questionRow.subtopic_id);
+
+    if (questionSubtopicId === null) {
+      console.error("[api/mark-answer] Generated question missing subtopic_id", {
+        generatedQuestionId: request.generatedQuestionId,
+        subtopicId: questionRow.subtopic_id,
+      });
+
+      return createErrorResult(500, SAFE_ERRORS.markingCriteria);
+    }
+
     return {
       input: {
         generatedQuestionId: request.generatedQuestionId,
         answerText: request.answerText,
         questionText: questionRow.question_text,
+        answerFocus: questionRow.answer_focus?.trim() ?? "",
         marks: questionRow.marks,
         questionType: questionRow.question_type?.trim() || "unknown",
         rubricPoints,
       },
+      questionSubtopicId,
       meta: {
         dbQuestionMs: questionResult.ms,
         dbRubricMs: rubricResult.ms,
@@ -286,6 +368,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value);
+}
+
+function isSuccessfulMarkAnswerResult(
+  body: unknown,
+): body is MarkAnswerResponse {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    "score" in body &&
+    typeof body.score === "number" &&
+    "maxScore" in body &&
+    typeof body.maxScore === "number" &&
+    "rubricAssessment" in body &&
+    Array.isArray(body.rubricAssessment)
+  );
 }
 
 function maybeWarnAboutRubricSize(input: PreparedMarkingInput) {

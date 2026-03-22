@@ -1,9 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import Breadcrumbs from "@/components/breadcrumbs";
 import PracticeInputBar from "@/components/practice/practice-input-bar";
 import PracticeSessionPanel from "@/components/practice/practice-session-panel";
+import { formatRubricPointDisplayText } from "@/lib/marking/rubric-display";
 import type {
   ApiErrorResponse,
   GenerateQuestionResponse,
@@ -52,6 +60,22 @@ type SessionThread = {
   isCollapsed: boolean;
 };
 
+type PrefetchedNextQuestionSlot = {
+  question: GenerateQuestionResponse;
+  slotKey: string;
+};
+
+type PrefetchedNextQuestionRequest = {
+  contextKey: string;
+  promise: Promise<GenerateQuestionResponse | null>;
+};
+
+type FetchGeneratedQuestionOptions = {
+  excludeQuestionIds: number[];
+  requestToken: number;
+  suppressErrors?: boolean;
+};
+
 const primaryButtonClass =
   "inline-flex min-h-11 items-center justify-center rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 dark:bg-sky-600 dark:hover:bg-sky-500 dark:disabled:bg-slate-800 dark:disabled:text-slate-500";
 
@@ -77,6 +101,8 @@ export default function PracticeWorkspaceShell({
   const [sessionLength, setSessionLength] =
     useState<PracticeSessionLength>(DEFAULT_SESSION_LENGTH);
   const [sessionThreads, setSessionThreads] = useState<SessionThread[]>([]);
+  const [prefetchedNextQuestion, setPrefetchedNextQuestion] =
+    useState<PrefetchedNextQuestionSlot | null>(null);
   const [answerDraft, setAnswerDraft] = useState("");
   const [questionCursor, setQuestionCursor] = useState(0);
   const [completedQuestionCount, setCompletedQuestionCount] = useState(0);
@@ -93,14 +119,38 @@ export default function PracticeWorkspaceShell({
   const centerScrollContainerRef = useRef<HTMLDivElement>(null);
   const previousSelectionKeyRef = useRef(selectionKey);
   const sessionRequestTokenRef = useRef(0);
+  const prefetchedNextQuestionRef =
+    useRef<PrefetchedNextQuestionSlot | null>(null);
+  const prefetchedNextQuestionRequestRef =
+    useRef<PrefetchedNextQuestionRequest | null>(null);
+  const currentPrefetchSlotKeyRef = useRef("");
 
   const activeThread = getActiveThread(sessionThreads);
   const currentQuestion = activeThread?.question ?? null;
+  const currentQuestionId = currentQuestion?.questionId ?? null;
+  const sessionQuestionIds = useMemo(
+    () => getSessionQuestionIds(sessionThreads),
+    [sessionThreads],
+  );
+  const sessionQuestionIdsKey = buildSessionQuestionIdsKey(sessionQuestionIds);
+  const prefetchScopeKey = buildPrefetchScopeKey(
+    selectionKey,
+    questionFilterMode,
+  );
+  const prefetchSlotKey = buildPrefetchSlotKey(
+    prefetchScopeKey,
+    sessionQuestionIdsKey,
+  );
+  const prefetchRequestContextKey = buildPrefetchRequestContextKey(
+    prefetchSlotKey,
+    currentQuestionId,
+  );
   const hasSelectedTopics = selectedSubtopics.length > 0;
   const isSessionComplete =
     completedQuestionCount >= sessionLength &&
     sessionThreads.length > 0 &&
     activeThread === null;
+  currentPrefetchSlotKeyRef.current = isSessionComplete ? "" : prefetchSlotKey;
   const isGeneratingNextThread =
     isGeneratingQuestion &&
     activeThread === null &&
@@ -135,6 +185,47 @@ export default function PracticeWorkspaceShell({
     answerReviewStartedAt === null
       ? null
       : `AI review timer: ${formatElapsedSeconds(answerReviewElapsedMs)} elapsed`;
+  const hasValidPrefetchedNextQuestion = isPrefetchedQuestionSlotValid(
+    prefetchedNextQuestion,
+    prefetchSlotKey,
+    sessionQuestionIds,
+  );
+
+  function setPrefetchedNextQuestionSlot(
+    nextSlot: PrefetchedNextQuestionSlot | null,
+  ) {
+    prefetchedNextQuestionRef.current = nextSlot;
+    setPrefetchedNextQuestion(nextSlot);
+  }
+
+  function clearPrefetchedNextQuestionSlot() {
+    setPrefetchedNextQuestionSlot(null);
+  }
+
+  function invalidatePrefetchedQuestionState() {
+    currentPrefetchSlotKeyRef.current = "";
+    clearPrefetchedNextQuestionSlot();
+    prefetchedNextQuestionRequestRef.current = null;
+  }
+
+  function consumePrefetchedNextQuestionIfValid() {
+    const nextSlot = prefetchedNextQuestionRef.current;
+
+    if (!nextSlot) {
+      return null;
+    }
+
+    if (!isPrefetchedQuestionSlotValid(nextSlot, prefetchSlotKey, sessionQuestionIds)) {
+      if (nextSlot) {
+        clearPrefetchedNextQuestionSlot();
+      }
+
+      return null;
+    }
+
+    clearPrefetchedNextQuestionSlot();
+    return nextSlot.question;
+  }
 
   useEffect(() => {
     if (answerReviewStartedAt === null) {
@@ -164,6 +255,137 @@ export default function PracticeWorkspaceShell({
     resetSessionState({ resetControls: true, scrollToTop: true });
   }, [selectionKey]);
 
+  useEffect(() => {
+    if (
+      prefetchedNextQuestion !== null &&
+      !isPrefetchedQuestionSlotValid(
+        prefetchedNextQuestion,
+        prefetchSlotKey,
+        sessionQuestionIds,
+      )
+    ) {
+      prefetchedNextQuestionRef.current = null;
+      setPrefetchedNextQuestion(null);
+    }
+  }, [prefetchedNextQuestion, prefetchSlotKey, sessionQuestionIds]);
+
+  const fetchGeneratedQuestion = useCallback(
+    async ({
+      excludeQuestionIds,
+      requestToken,
+      suppressErrors = false,
+    }: FetchGeneratedQuestionOptions) => {
+      const response = await fetch("/api/generate-question", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          subjectId: subjectSlug,
+          selectedSubtopicIds,
+          excludeQuestionIds,
+          questionFilterMode,
+          sessionLength,
+          questionCursor,
+        }),
+      });
+      const body = await readResponseBody(response);
+
+      if (requestToken !== sessionRequestTokenRef.current) {
+        return null;
+      }
+
+      if (!response.ok) {
+        if (!suppressErrors) {
+          setGenerationError(
+            getApiErrorMessage(body, "Could not generate a question right now."),
+          );
+        }
+        return null;
+      }
+
+      if (!isGenerateQuestionResponse(body)) {
+        if (!suppressErrors) {
+          setGenerationError("Could not generate a question right now.");
+        }
+        return null;
+      }
+
+      return body;
+    },
+    [
+      questionCursor,
+      questionFilterMode,
+      selectedSubtopicIds,
+      sessionLength,
+      subjectSlug,
+    ],
+  );
+
+  useEffect(() => {
+    if (!currentQuestionId || isSessionComplete || hasValidPrefetchedNextQuestion) {
+      return;
+    }
+
+    if (
+      prefetchedNextQuestionRequestRef.current?.contextKey ===
+      prefetchRequestContextKey
+    ) {
+      return;
+    }
+
+    const requestToken = sessionRequestTokenRef.current;
+    const prefetchPromise = fetchGeneratedQuestion({
+      excludeQuestionIds: sessionQuestionIds,
+      requestToken,
+      suppressErrors: true,
+    })
+      .then((nextQuestion) => {
+        if (!nextQuestion || requestToken !== sessionRequestTokenRef.current) {
+          return null;
+        }
+
+        if (currentPrefetchSlotKeyRef.current !== prefetchSlotKey) {
+          return null;
+        }
+
+        if (sessionQuestionIds.includes(Number(nextQuestion.questionId))) {
+          return null;
+        }
+
+        const nextSlot: PrefetchedNextQuestionSlot = {
+          question: nextQuestion,
+          slotKey: prefetchSlotKey,
+        };
+
+        setPrefetchedNextQuestionSlot(nextSlot);
+
+        return nextQuestion;
+      })
+      .catch(() => null)
+      .finally(() => {
+        if (
+          prefetchedNextQuestionRequestRef.current?.contextKey ===
+          prefetchRequestContextKey
+        ) {
+          prefetchedNextQuestionRequestRef.current = null;
+        }
+      });
+
+    prefetchedNextQuestionRequestRef.current = {
+      contextKey: prefetchRequestContextKey,
+      promise: prefetchPromise,
+    };
+  }, [
+    currentQuestionId,
+    fetchGeneratedQuestion,
+    hasValidPrefetchedNextQuestion,
+    isSessionComplete,
+    prefetchRequestContextKey,
+    prefetchSlotKey,
+    sessionQuestionIds,
+  ]);
+
   function scrollMainContentToTop() {
     const scrollContainer = centerScrollContainerRef.current;
 
@@ -181,6 +403,7 @@ export default function PracticeWorkspaceShell({
   } = {}) {
     sessionRequestTokenRef.current += 1;
     setSessionThreads([]);
+    invalidatePrefetchedQuestionState();
     setAnswerDraft("");
     setQuestionCursor(0);
     setCompletedQuestionCount(0);
@@ -225,42 +448,10 @@ export default function PracticeWorkspaceShell({
     }
   }
 
-  async function fetchGeneratedQuestion(requestToken: number) {
-    const response = await fetch("/api/generate-question", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        subjectId: subjectSlug,
-        selectedSubtopicIds,
-        questionFilterMode,
-        sessionLength,
-        questionCursor,
-      }),
-    });
-    const body = await readResponseBody(response);
-
-    if (requestToken !== sessionRequestTokenRef.current) {
-      return null;
-    }
-
-    if (!response.ok) {
-      setGenerationError(
-        getApiErrorMessage(body, "Could not generate a question right now."),
-      );
-      return null;
-    }
-
-    if (!isGenerateQuestionResponse(body)) {
-      setGenerationError("Could not generate a question right now.");
-      return null;
-    }
-
-    return body;
-  }
-
   function appendGeneratedThread(question: GenerateQuestionResponse) {
+    currentPrefetchSlotKeyRef.current = "";
+    clearPrefetchedNextQuestionSlot();
+    prefetchedNextQuestionRequestRef.current = null;
     setSessionThreads((current) => [
       ...current,
       createSessionThread(question, current.length + 1),
@@ -292,10 +483,20 @@ export default function PracticeWorkspaceShell({
 
     setGenerationError(null);
     setAnswerError(null);
+    const prefetchedQuestion = consumePrefetchedNextQuestionIfValid();
+
+    if (prefetchedQuestion) {
+      appendGeneratedThread(prefetchedQuestion);
+      return;
+    }
+
     setIsGeneratingQuestion(true);
 
     try {
-      const nextQuestion = await fetchGeneratedQuestion(requestToken);
+      const nextQuestion = await fetchGeneratedQuestion({
+        excludeQuestionIds: sessionQuestionIds,
+        requestToken,
+      });
 
       if (!nextQuestion || requestToken !== sessionRequestTokenRef.current) {
         return;
@@ -378,7 +579,7 @@ export default function PracticeWorkspaceShell({
           ...thread,
           attempts: [...thread.attempts, nextAttempt],
           stage: completed ? "complete" : "feedback",
-          isCollapsed: completed ? false : thread.isCollapsed,
+          isCollapsed: completed ? true : thread.isCollapsed,
         })),
       );
 
@@ -393,13 +594,37 @@ export default function PracticeWorkspaceShell({
       setCompletedQuestionCount(nextCompletedQuestionCount);
 
       if (nextCompletedQuestionCount >= sessionLength) {
+        invalidatePrefetchedQuestionState();
+        return;
+      }
+
+      const prefetchedQuestion = consumePrefetchedNextQuestionIfValid();
+
+      if (prefetchedQuestion) {
+        appendGeneratedThread(prefetchedQuestion);
         return;
       }
 
       setIsGeneratingQuestion(true);
 
       try {
-        const nextQuestion = await fetchGeneratedQuestion(requestToken);
+        const currentPrefetchRequest = prefetchedNextQuestionRequestRef.current;
+
+        if (currentPrefetchRequest?.contextKey === prefetchRequestContextKey) {
+          await currentPrefetchRequest.promise;
+        }
+
+        const awaitedPrefetchedQuestion = consumePrefetchedNextQuestionIfValid();
+
+        if (awaitedPrefetchedQuestion) {
+          appendGeneratedThread(awaitedPrefetchedQuestion);
+          return;
+        }
+
+        const nextQuestion = await fetchGeneratedQuestion({
+          excludeQuestionIds: sessionQuestionIds,
+          requestToken,
+        });
 
         if (!nextQuestion || requestToken !== sessionRequestTokenRef.current) {
           return;
@@ -811,7 +1036,11 @@ function ActivePracticeThread({
       {thread.attempts.length > 0 ? (
         <div className="space-y-5">
           {thread.attempts.map((attempt) => (
-            <ThreadTurn attempt={attempt} key={attempt.attemptNumber} />
+            <ThreadTurn
+              attempt={attempt}
+              key={attempt.attemptNumber}
+              modelAnswer={thread.question.modelAnswer}
+            />
           ))}
         </div>
       ) : (
@@ -914,7 +1143,7 @@ function CompletedPracticeThread({
             <span className="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 dark:text-slate-300">
               {thread.isCollapsed ? "Show history" : "Hide history"}
               <ThreadDisclosureIcon
-                className={`h-4 w-4 transition-transform ${
+                className={`h-4 w-4 transition-transform duration-200 ease-out motion-reduce:transition-none ${
                   thread.isCollapsed ? "" : "rotate-180"
                 }`}
               />
@@ -936,21 +1165,38 @@ function CompletedPracticeThread({
         <span>{improvementLabel}</span>
       </div>
 
-      {!thread.isCollapsed ? (
-        <div className="mt-5 space-y-5 border-t border-slate-200/80 pt-5 dark:border-slate-800/80">
-          <QuestionThreadHeader
-            isCondensed
-            question={thread.question}
-            threadNumber={threadNumber}
-          />
+      <div
+        aria-hidden={thread.isCollapsed}
+        className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none ${
+          thread.isCollapsed
+            ? "grid-rows-[0fr] opacity-0"
+            : "grid-rows-[1fr] opacity-100"
+        }`}
+      >
+        <div className="overflow-hidden">
+          <div
+            className={`mt-5 space-y-5 border-t border-slate-200/80 pt-5 transition-transform duration-200 ease-out motion-reduce:transition-none dark:border-slate-800/80 ${
+              thread.isCollapsed ? "-translate-y-2" : "translate-y-0"
+            }`}
+          >
+            <QuestionThreadHeader
+              isCondensed
+              question={thread.question}
+              threadNumber={threadNumber}
+            />
 
-          <div className="space-y-5">
-            {thread.attempts.map((attempt) => (
-              <ThreadTurn attempt={attempt} key={attempt.attemptNumber} />
-            ))}
+            <div className="space-y-5">
+              {thread.attempts.map((attempt) => (
+                <ThreadTurn
+                  attempt={attempt}
+                  key={attempt.attemptNumber}
+                  modelAnswer={thread.question.modelAnswer}
+                />
+              ))}
+            </div>
           </div>
         </div>
-      ) : null}
+      </div>
     </article>
   );
 }
@@ -1023,11 +1269,13 @@ function ThreadStartState() {
 
 type ThreadTurnProps = {
   attempt: PracticeAttempt;
+  modelAnswer: string | null;
 };
 
 type RubricAssessmentItem = MarkAnswerResponse["rubricAssessment"][number];
 
-function ThreadTurn({ attempt }: ThreadTurnProps) {
+function ThreadTurn({ attempt, modelAnswer }: ThreadTurnProps) {
+  const [isModelAnswerVisible, setIsModelAnswerVisible] = useState(false);
   const correctItems = attempt.feedback.rubricAssessment.filter(
     (item) => item.status === "present",
   );
@@ -1037,6 +1285,9 @@ function ThreadTurn({ attempt }: ThreadTurnProps) {
   const partialItems = attempt.feedback.rubricAssessment.filter(
     (item) => item.status === "partial",
   );
+  const hasModelAnswer =
+    typeof modelAnswer === "string" && modelAnswer.trim().length > 0;
+  const offTopicPoints = attempt.feedback.feedback.offTopicPoints ?? [];
 
   return (
     <div className="space-y-4">
@@ -1082,6 +1333,16 @@ function ThreadTurn({ attempt }: ThreadTurnProps) {
             />
           ) : null}
           <NextDraftTargetSection nextStep={attempt.feedback.feedback.nextStep} />
+          {offTopicPoints.length > 0 ? (
+            <OffTopicContentSection offTopicPoints={offTopicPoints} />
+          ) : null}
+          {hasModelAnswer ? (
+            <ModelAnswerSection
+              isVisible={isModelAnswerVisible}
+              modelAnswer={modelAnswer}
+              onToggle={() => setIsModelAnswerVisible((current) => !current)}
+            />
+          ) : null}
         </div>
       </ThreadBlock>
     </div>
@@ -1156,7 +1417,7 @@ function CompactMissingList({ items }: { items: RubricAssessmentItem[] }) {
           }`}
           key={`${item.pointText}-${index}`}
         >
-          {item.pointText}
+          {formatRubricPointDisplayText(item.pointText)}
         </li>
       ))}
     </ul>
@@ -1180,7 +1441,7 @@ function RubricAssessmentRow({ item, status }: RubricAssessmentRowProps) {
         <ReviewStatusMarker status={status} />
         <div className="min-w-0 flex-1 space-y-2">
           <p className="text-sm font-semibold leading-6 text-slate-900 dark:text-white">
-            {item.pointText}
+            {formatRubricPointDisplayText(item.pointText)}
           </p>
           {status !== "absent" ? (
             <p className="text-sm leading-6 text-slate-700 dark:text-slate-300">
@@ -1249,6 +1510,73 @@ function NextDraftTargetSection({ nextStep }: { nextStep: string }) {
   );
 }
 
+function OffTopicContentSection({
+  offTopicPoints,
+}: {
+  offTopicPoints: string[];
+}) {
+  return (
+    <section className="space-y-3">
+      <p className="text-sm font-semibold text-slate-900 dark:text-white">
+        Off-topic or unnecessary content
+      </p>
+      <ul className="overflow-hidden rounded-[20px] border border-dashed border-slate-300 bg-white/70 dark:border-slate-700 dark:bg-slate-900/60">
+        {offTopicPoints.map((point, index) => (
+          <li
+            className={`px-4 py-3 text-sm leading-6 text-slate-600 dark:text-slate-300 ${
+              index === 0 ? "" : "border-t border-slate-200/80 dark:border-slate-800/80"
+            }`}
+            key={`${point}-${index}`}
+          >
+            {point}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+type ModelAnswerSectionProps = {
+  modelAnswer: string;
+  isVisible: boolean;
+  onToggle: () => void;
+};
+
+function ModelAnswerSection({
+  modelAnswer,
+  isVisible,
+  onToggle,
+}: ModelAnswerSectionProps) {
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-slate-900 dark:text-white">
+          Model answer
+        </p>
+        <button
+          aria-expanded={isVisible}
+          className="inline-flex min-h-9 items-center justify-center rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:hover:border-sky-500 dark:hover:text-sky-200"
+          onClick={onToggle}
+          type="button"
+        >
+          {isVisible ? "Hide model answer" : "Show model answer"}
+        </button>
+      </div>
+
+      {isVisible ? (
+        <div className="rounded-[22px] border border-slate-200 bg-white/85 px-4 py-4 text-sm leading-7 text-slate-700 dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-200">
+          <p className="whitespace-pre-wrap">{modelAnswer}</p>
+        </div>
+      ) : (
+        <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
+          Reveal the stored model answer to compare structure and coverage after
+          reviewing the feedback.
+        </p>
+      )}
+    </section>
+  );
+}
+
 type ThreadActionBarProps = {
   message: string;
   action?: ReactNode;
@@ -1285,6 +1613,47 @@ function ThreadLoadingState({ nextThreadNumber }: ThreadLoadingStateProps) {
       </p>
     </section>
   );
+}
+
+function getSessionQuestionIds(threads: SessionThread[]) {
+  return threads.map((thread) => Number(thread.question.questionId));
+}
+
+function buildSessionQuestionIdsKey(questionIds: number[]) {
+  return questionIds.join("|");
+}
+
+function buildPrefetchScopeKey(
+  selectionKey: string,
+  questionFilterMode: PracticeQuestionFilterMode,
+) {
+  return `${selectionKey}::${questionFilterMode}`;
+}
+
+function buildPrefetchSlotKey(
+  prefetchScopeKey: string,
+  sessionQuestionIdsKey: string,
+) {
+  return `${prefetchScopeKey}::${sessionQuestionIdsKey}`;
+}
+
+function buildPrefetchRequestContextKey(
+  prefetchSlotKey: string,
+  currentQuestionId: string | null,
+) {
+  return `${prefetchSlotKey}::${currentQuestionId ?? "none"}`;
+}
+
+function isPrefetchedQuestionSlotValid(
+  nextSlot: PrefetchedNextQuestionSlot | null,
+  expectedSlotKey: string,
+  sessionQuestionIds: number[],
+) {
+  if (!nextSlot || nextSlot.slotKey !== expectedSlotKey) {
+    return false;
+  }
+
+  return !sessionQuestionIds.includes(Number(nextSlot.question.questionId));
 }
 
 type ThreadGenerationErrorProps = {
@@ -1560,6 +1929,7 @@ function isGenerateQuestionResponse(
     typeof body.subtopicId === "string" &&
     typeof body.subtopicLabel === "string" &&
     typeof body.answerFocus === "string" &&
+    (body.modelAnswer === null || typeof body.modelAnswer === "string") &&
     Array.isArray(body.rubricPoints) &&
     body.rubricPoints.every((point) => {
       return (
@@ -1587,7 +1957,13 @@ function isMarkAnswerResponse(body: unknown): body is MarkAnswerResponse {
       );
     }) &&
     isRecord(body.feedback) &&
-    typeof body.feedback.nextStep === "string"
+    typeof body.feedback.nextStep === "string" &&
+    (!("offTopicPoints" in body.feedback) ||
+      body.feedback.offTopicPoints === undefined ||
+      (Array.isArray(body.feedback.offTopicPoints) &&
+        body.feedback.offTopicPoints.every(
+          (point) => typeof point === "string",
+        )))
   );
 }
 

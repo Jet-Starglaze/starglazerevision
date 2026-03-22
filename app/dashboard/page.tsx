@@ -162,6 +162,13 @@ export default async function DashboardPage() {
               >
                 Start new practice session
               </Link>
+              <Link
+                className={secondaryButtonClass}
+                href="/dashboard/stats"
+                prefetch={false}
+              >
+                View statistics
+              </Link>
             </div>
           </div>
         </section>

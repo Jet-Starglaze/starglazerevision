@@ -109,10 +109,22 @@ function normalizeRubricAssessmentItem(
 
 function normalizeFeedback(value: unknown): PracticeStructuredFeedback {
   const parsedRecord = expectRecord(value, "feedback must be an object");
+  const offTopicPoints = normalizeOffTopicPoints(parsedRecord.offTopicPoints);
 
-  return {
-    nextStep: normalizeRequiredString(parsedRecord.nextStep, "feedback.nextStep"),
-  };
+  return offTopicPoints
+    ? {
+        nextStep: normalizeRequiredString(
+          parsedRecord.nextStep,
+          "feedback.nextStep",
+        ),
+        offTopicPoints,
+      }
+    : {
+        nextStep: normalizeRequiredString(
+          parsedRecord.nextStep,
+          "feedback.nextStep",
+        ),
+      };
 }
 
 function normalizeRequiredString(value: unknown, fieldName: string) {
@@ -135,6 +147,26 @@ function normalizeOptionalString(value: unknown, fieldName: string) {
   }
 
   return value.trim();
+}
+
+function normalizeOffTopicPoints(value: unknown) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!Array.isArray(value)) {
+    throw new Error("feedback.offTopicPoints must be an array");
+  }
+
+  const normalizedPoints = Array.from(
+    new Set(
+      value.map((item, index) =>
+        normalizeRequiredString(item, `feedback.offTopicPoints[${index}]`),
+      ),
+    ),
+  ).slice(0, 3);
+
+  return normalizedPoints.length > 0 ? normalizedPoints : undefined;
 }
 
 function normalizeRubricAssessmentStatus(

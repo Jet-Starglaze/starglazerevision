@@ -18,12 +18,35 @@ import {
   type GeneratedQuestionRecord,
   type SupabaseServerClient,
 } from "@/lib/generated-practice-content";
+import {
+  fetchUserQuestionProgressForQuestions,
+  getAuthenticatedUserId,
+  type UserQuestionProgressSnapshot,
+} from "@/lib/practice-progress";
 import { createClient } from "@/utils/supabase/server";
 
 type PracticeQuestionApiResult<T> = {
   status: number;
   body: T | ApiErrorResponse;
 };
+
+type GeneratedQuestionBuildResult =
+  | {
+      accepted: true;
+      question: GenerateQuestionResponse;
+      normalizedQuestionType: PracticeQuestionCommandWord;
+      rubricPointCount: number;
+    }
+  | {
+      accepted: false;
+      stage: "status" | "question_type" | "subtopic_context" | "rubric";
+      reason:
+        | "status mismatch"
+        | "invalid question_type"
+        | "subject/topic/subtopic join mismatch"
+        | "missing rubric";
+      details?: Record<string, unknown>;
+    };
 
 type MaybeEmbedded<T> = T | T[] | null;
 
@@ -43,6 +66,10 @@ const noApprovedQuestionsMessage =
   "No approved questions are available yet for the selected subtopics.";
 const questionLoadErrorMessage =
   "Could not load a generated question right now.";
+const authRequiredMessage = "Authentication required.";
+const SHOULD_LOG_GENERATE_QUESTION_DEBUG =
+  process.env.NODE_ENV === "development";
+let generatedQuestionModelAnswerAvailable: boolean | null = null;
 const legacyQuestionTypeValues = new Set([
   "6-mark",
   "six-mark",
@@ -60,6 +87,7 @@ export async function fetchPracticeQuestionFromSupabase(
   const {
     subjectId,
     selectedSubtopicIds,
+    excludeQuestionIds,
     questionFilterMode,
     sessionLength,
     questionCursor,
@@ -93,6 +121,20 @@ export async function fetchPracticeQuestionFromSupabase(
     return createErrorResult(400, "No subtopics selected");
   }
 
+  const normalizedExcludedQuestionIds =
+    excludeQuestionIds === undefined
+      ? []
+      : Array.isArray(excludeQuestionIds)
+        ? normalizeNumericIds(excludeQuestionIds)
+        : null;
+
+  if (normalizedExcludedQuestionIds === null) {
+    return createErrorResult(
+      400,
+      "excludeQuestionIds must be an array of numeric IDs",
+    );
+  }
+
   if (!isPracticeQuestionFilterMode(questionFilterMode)) {
     return createErrorResult(400, "Invalid questionFilterMode");
   }
@@ -109,54 +151,75 @@ export async function fetchPracticeQuestionFromSupabase(
   }
 
   const uniqueSubtopicIds = uniqueIntegers(normalizedSubtopicIds);
+  const uniqueExcludedQuestionIds = uniqueIntegers(normalizedExcludedQuestionIds);
   const supabase = await createClient();
+  const userId = await getAuthenticatedUserId(supabase);
+  const effectiveQuestionCursor = questionCursor ?? 0;
 
-  let questionQuery = supabase
-    .from("generated_questions")
-    .select(
-      `
-        id,
-        subtopic_id,
-        question_text,
-        marks,
-        question_type,
-        answer_focus
-      `,
-    )
-    .eq("status", "approved")
-    .in("subtopic_id", uniqueSubtopicIds)
-    .order("id", { ascending: true });
-
-  if (questionFilterMode === "six-mark-only") {
-    questionQuery = questionQuery.eq("marks", 6);
-  } else if (questionFilterMode === "long-answer") {
-    questionQuery = questionQuery.gte("marks", 3);
+  if (!userId) {
+    return createErrorResult(401, authRequiredMessage);
   }
 
-  const { data, error } = await questionQuery;
+  logGenerateQuestionDebug("request-received", {
+    subjectId,
+    selectedSubtopicIds,
+    normalizedSubtopicIds,
+    uniqueSubtopicIds,
+    excludeQuestionIds: uniqueExcludedQuestionIds,
+    questionFilterMode,
+    sessionLength,
+    questionCursor: effectiveQuestionCursor,
+  });
 
-  if (error) {
+  logGenerateQuestionDebug("query-filters", {
+    selectedSubtopicIds: uniqueSubtopicIds,
+    excludeQuestionIds: uniqueExcludedQuestionIds,
+    statusFilter: "approved",
+    questionFilterMode,
+    marksFilter: describeMarksFilter(questionFilterMode),
+  });
+
+  let questionRows: GeneratedQuestionRecord[];
+
+  try {
+    questionRows = await fetchGeneratedQuestionRows({
+      excludeQuestionIds: uniqueExcludedQuestionIds,
+      questionFilterMode,
+      selectedSubtopicIds: uniqueSubtopicIds,
+      supabase,
+    });
+  } catch (caughtError) {
     console.error("[api/generate-question] Failed to load generated questions", {
       subjectId,
       selectedSubtopicIds: uniqueSubtopicIds,
       questionFilterMode,
-      message: error.message,
+      message:
+        caughtError instanceof Error ? caughtError.message : String(caughtError),
     });
 
     return createErrorResult(500, questionLoadErrorMessage);
   }
 
-  const questionRows = (data ?? []) as GeneratedQuestionRecord[];
+  logGenerateQuestionDebug("query-rows-fetched", {
+    count: questionRows.length,
+    rows: questionRows.map(summarizeGeneratedQuestionRow),
+  });
 
   if (questionRows.length === 0) {
     return createErrorResult(404, noApprovedQuestionsMessage);
   }
 
   try {
+    const userQuestionProgress = await fetchUserQuestionProgressForQuestions(
+      supabase,
+      userId,
+      questionRows.map((row) => row.id),
+    );
     const nextQuestion = await buildNextGeneratedQuestionResponse(
       questionRows,
-      questionCursor ?? 0,
+      effectiveQuestionCursor,
       supabase,
+      userQuestionProgress,
     );
 
     if (!nextQuestion) {
@@ -192,28 +255,102 @@ async function buildNextGeneratedQuestionResponse(
   questionRows: GeneratedQuestionRecord[],
   questionCursor: number,
   supabase: SupabaseServerClient,
+  userQuestionProgress: UserQuestionProgressSnapshot[],
 ): Promise<GenerateQuestionResponse | null> {
-  for (let offset = 0; offset < questionRows.length; offset += 1) {
-    const row = questionRows[(questionCursor + offset) % questionRows.length] ?? null;
+  const orderedQuestionRows = rankQuestionRowsForUser(
+    questionRows,
+    questionCursor,
+    userQuestionProgress,
+  );
+  let rowsAfterStatus = 0;
+  let rowsAfterQuestionType = 0;
+  let rowsAfterSubtopicContext = 0;
+  let rowsAfterRubric = 0;
+  let nextQuestion: GenerateQuestionResponse | null = null;
 
-    if (!row) {
+  logGenerateQuestionDebug("candidate-order", {
+    questionCursor,
+    orderedQuestionIds: orderedQuestionRows.map((row) => String(row.id)),
+  });
+
+  for (const row of orderedQuestionRows) {
+    const buildResult = await buildGeneratedQuestionResponse(row, supabase);
+
+    if (buildResult.accepted) {
+      rowsAfterStatus += 1;
+      rowsAfterQuestionType += 1;
+      rowsAfterSubtopicContext += 1;
+      rowsAfterRubric += 1;
+
+      logGenerateQuestionDebug("row-accepted", {
+        questionId: String(row.id),
+        normalizedQuestionType: buildResult.normalizedQuestionType,
+        rubricPointCount: buildResult.rubricPointCount,
+      });
+
+      nextQuestion ??= buildResult.question;
+
+      if (!SHOULD_LOG_GENERATE_QUESTION_DEBUG) {
+        return nextQuestion;
+      }
+
       continue;
     }
 
-    const nextQuestion = await buildGeneratedQuestionResponse(row, supabase);
-
-    if (nextQuestion) {
-      return nextQuestion;
+    if (buildResult.stage !== "status") {
+      rowsAfterStatus += 1;
     }
+
+    if (
+      buildResult.stage !== "status" &&
+      buildResult.stage !== "question_type"
+    ) {
+      rowsAfterQuestionType += 1;
+    }
+
+    if (
+      buildResult.stage !== "status" &&
+      buildResult.stage !== "question_type" &&
+      buildResult.stage !== "subtopic_context"
+    ) {
+      rowsAfterSubtopicContext += 1;
+    }
+
+    logGenerateQuestionDebug("row-rejected", {
+      questionId: String(row.id),
+      stage: buildResult.stage,
+      reason: buildResult.reason,
+      ...buildResult.details,
+    });
   }
 
-  return null;
+  logGenerateQuestionDebug("filter-summary", {
+    totalFetchedRows: orderedQuestionRows.length,
+    rowsAfterStatus,
+    rowsAfterQuestionType,
+    rowsAfterSubtopicContext,
+    rowsAfterRubric,
+    acceptedQuestionId: nextQuestion?.questionId ?? null,
+  });
+
+  return nextQuestion;
 }
 
 async function buildGeneratedQuestionResponse(
   row: GeneratedQuestionRecord,
   supabase: SupabaseServerClient,
-): Promise<GenerateQuestionResponse | null> {
+): Promise<GeneratedQuestionBuildResult> {
+  if (row.status !== "approved") {
+    return {
+      accepted: false,
+      stage: "status",
+      reason: "status mismatch",
+      details: {
+        status: row.status,
+      },
+    };
+  }
+
   const normalizedQuestionType = mapDatabaseQuestionType(
     row.question_type,
     row.question_text,
@@ -221,14 +358,34 @@ async function buildGeneratedQuestionResponse(
   );
 
   if (!normalizedQuestionType) {
-    return null;
+    return {
+      accepted: false,
+      stage: "question_type",
+      reason: "invalid question_type",
+      details: {
+        storedQuestionType: row.question_type,
+        normalizedQuestionType:
+          typeof row.question_type === "string"
+            ? normalizeStoredQuestionType(row.question_type)
+            : null,
+      },
+    };
   }
 
   const subtopicRow = await fetchSubtopicContext(supabase, row.subtopic_id);
   const topicRow = takeFirst(subtopicRow?.topics);
 
   if (!subtopicRow || !topicRow) {
-    return null;
+    return {
+      accepted: false,
+      stage: "subtopic_context",
+      reason: "subject/topic/subtopic join mismatch",
+      details: {
+        subtopicId: String(row.subtopic_id),
+        subtopicFound: Boolean(subtopicRow),
+        topicFound: Boolean(topicRow),
+      },
+    };
   }
 
   const rubricPoints = await fetchGeneratedRubricPoints(supabase, row.id);
@@ -239,20 +396,34 @@ async function buildGeneratedQuestionResponse(
       subtopicId: String(row.subtopic_id),
     });
 
-    return null;
+    return {
+      accepted: false,
+      stage: "rubric",
+      reason: "missing rubric",
+      details: {
+        questionId: String(row.id),
+        subtopicId: String(row.subtopic_id),
+      },
+    };
   }
 
   return {
-    questionId: String(toNumericId(row.id)),
-    questionText: row.question_text,
-    marks: row.marks,
-    questionType: normalizedQuestionType,
-    topicId: String(toNumericId(topicRow.id)),
-    topicLabel: topicRow.name,
-    subtopicId: String(toNumericId(subtopicRow.id)),
-    subtopicLabel: subtopicRow.name,
-    answerFocus: row.answer_focus ?? "",
-    rubricPoints,
+    accepted: true,
+    normalizedQuestionType,
+    rubricPointCount: rubricPoints.length,
+    question: {
+      questionId: String(toNumericId(row.id)),
+      questionText: row.question_text,
+      marks: row.marks,
+      questionType: normalizedQuestionType,
+      topicId: String(toNumericId(topicRow.id)),
+      topicLabel: topicRow.name,
+      subtopicId: String(toNumericId(subtopicRow.id)),
+      subtopicLabel: subtopicRow.name,
+      answerFocus: row.answer_focus ?? "",
+      modelAnswer: normalizeStoredModelAnswer(row.model_answer),
+      rubricPoints,
+    },
   };
 }
 
@@ -291,7 +462,15 @@ function mapDatabaseQuestionType(
     return null;
   }
 
-  const normalizedValue = normalizePracticeQuestionCommandWord(questionType);
+  const normalizedValue = normalizeStoredQuestionType(questionType);
+
+  if (normalizedValue !== normalizePracticeQuestionCommandWord(questionType)) {
+    logGenerateQuestionDebug("question-type-normalized", {
+      questionId: String(questionId),
+      storedQuestionType: questionType,
+      normalizedQuestionType: normalizedValue,
+    });
+  }
 
   if (!normalizedValue) {
     return null;
@@ -324,6 +503,10 @@ function mapDatabaseQuestionType(
     : null;
 }
 
+function normalizeStoredQuestionType(value: string) {
+  return normalizePracticeQuestionCommandWord(value).replace(/[_\s]+/g, "-");
+}
+
 function takeFirst<T>(value: MaybeEmbedded<T> | undefined): T | null {
   if (Array.isArray(value)) {
     return value[0] ?? null;
@@ -334,6 +517,275 @@ function takeFirst<T>(value: MaybeEmbedded<T> | undefined): T | null {
 
 function uniqueIntegers(value: number[]) {
   return Array.from(new Set(value));
+}
+
+function rankQuestionRowsForUser(
+  questionRows: GeneratedQuestionRecord[],
+  questionCursor: number,
+  userQuestionProgress: UserQuestionProgressSnapshot[],
+) {
+  const progressByQuestionId = new Map(
+    userQuestionProgress.map((progress) => [
+      toNumericId(progress.generated_question_id),
+      progress,
+    ]),
+  );
+  const candidates = questionRows.map((row) => {
+    const progress = progressByQuestionId.get(toNumericId(row.id)) ?? null;
+
+    return {
+      row,
+      progress,
+      weaknessRatio: getWeaknessRatio(progress),
+    };
+  });
+  const mostRecentAttemptedQuestionId = getMostRecentAttemptedQuestionId(candidates);
+  const unseenCandidates = shuffleArray(
+    candidates.filter((candidate) => candidate.progress === null),
+  );
+  const seenCandidates = shuffleArray(
+    candidates.filter((candidate) => candidate.progress !== null),
+  ).sort((left, right) => left.weaknessRatio - right.weaknessRatio);
+  const orderedSeenCandidates = moveQuestionToEnd(
+    seenCandidates,
+    mostRecentAttemptedQuestionId,
+  );
+  const orderedCandidates = [...unseenCandidates, ...orderedSeenCandidates];
+
+  logGenerateQuestionDebug("selection-ranked-order", {
+    questionCursor,
+    unseenQuestionIds: unseenCandidates.map((candidate) => String(candidate.row.id)),
+    seenQuestionIds: orderedSeenCandidates.map((candidate) => ({
+      questionId: String(candidate.row.id),
+      weaknessRatio: candidate.weaknessRatio,
+      lastAttemptedAt: candidate.progress?.last_attempted_at ?? null,
+    })),
+    mostRecentAttemptedQuestionId:
+      mostRecentAttemptedQuestionId === null
+        ? null
+        : String(mostRecentAttemptedQuestionId),
+  });
+
+  return orderedCandidates.map((candidate) => candidate.row);
+}
+
+function getWeaknessRatio(progress: UserQuestionProgressSnapshot | null) {
+  if (!progress) {
+    return -1;
+  }
+
+  if (typeof progress.max_score !== "number" || progress.max_score <= 0) {
+    return 1;
+  }
+
+  const bestScore = typeof progress.best_score === "number" ? progress.best_score : 0;
+
+  return bestScore / progress.max_score;
+}
+
+function getMostRecentAttemptedQuestionId(
+  candidates: Array<{
+    row: GeneratedQuestionRecord;
+    progress: UserQuestionProgressSnapshot | null;
+    weaknessRatio: number;
+  }>,
+) {
+  let mostRecentQuestionId: number | null = null;
+  let mostRecentAttemptedAt: string | null = null;
+
+  for (const candidate of candidates) {
+    const attemptedAt = candidate.progress?.last_attempted_at ?? null;
+
+    if (!attemptedAt) {
+      continue;
+    }
+
+    if (mostRecentAttemptedAt === null || attemptedAt > mostRecentAttemptedAt) {
+      mostRecentAttemptedAt = attemptedAt;
+      mostRecentQuestionId = toNumericId(candidate.row.id);
+    }
+  }
+
+  return mostRecentQuestionId;
+}
+
+function moveQuestionToEnd<T extends { row: GeneratedQuestionRecord }>(
+  candidates: T[],
+  questionIdToMove: number | null,
+) {
+  if (questionIdToMove === null || candidates.length <= 1) {
+    return candidates;
+  }
+
+  const retainedCandidates: T[] = [];
+  let movedCandidate: T | null = null;
+
+  for (const candidate of candidates) {
+    if (toNumericId(candidate.row.id) === questionIdToMove && movedCandidate === null) {
+      movedCandidate = candidate;
+      continue;
+    }
+
+    retainedCandidates.push(candidate);
+  }
+
+  return movedCandidate ? [...retainedCandidates, movedCandidate] : candidates;
+}
+
+function shuffleArray<T>(items: T[]) {
+  const nextItems = [...items];
+
+  for (let index = nextItems.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    const currentItem = nextItems[index]!;
+
+    nextItems[index] = nextItems[swapIndex]!;
+    nextItems[swapIndex] = currentItem;
+  }
+
+  return nextItems;
+}
+
+function summarizeGeneratedQuestionRow(row: GeneratedQuestionRecord) {
+  return {
+    id: String(row.id),
+    subtopicId: String(row.subtopic_id),
+    marks: row.marks,
+    questionType: row.question_type,
+    status: row.status,
+    questionTextPreview: row.question_text.slice(0, 120),
+  };
+}
+
+function describeMarksFilter(questionFilterMode: PracticeQuestionFilterMode) {
+  if (questionFilterMode === "six-mark-only") {
+    return "marks = 6";
+  }
+
+  if (questionFilterMode === "long-answer") {
+    return "marks >= 3";
+  }
+
+  return "none (mixed mode keeps all approved rows)";
+}
+
+async function fetchGeneratedQuestionRows({
+  excludeQuestionIds,
+  questionFilterMode,
+  selectedSubtopicIds,
+  supabase,
+}: {
+  excludeQuestionIds: number[];
+  questionFilterMode: PracticeQuestionFilterMode;
+  selectedSubtopicIds: number[];
+  supabase: SupabaseServerClient;
+}): Promise<GeneratedQuestionRecord[]> {
+  const includeModelAnswer = generatedQuestionModelAnswerAvailable !== false;
+  let questionQuery = supabase
+    .from("generated_questions")
+    .select(buildGeneratedQuestionSelect(includeModelAnswer))
+    .eq("status", "approved")
+    .in("subtopic_id", selectedSubtopicIds)
+    .order("id", { ascending: true });
+
+  if (excludeQuestionIds.length > 0) {
+    questionQuery = questionQuery.not("id", "in", `(${excludeQuestionIds.join(",")})`);
+  }
+
+  if (questionFilterMode === "six-mark-only") {
+    questionQuery = questionQuery.eq("marks", 6);
+  } else if (questionFilterMode === "long-answer") {
+    questionQuery = questionQuery.gte("marks", 3);
+  }
+
+  const { data, error } = await questionQuery;
+
+  if (error) {
+    if (includeModelAnswer && isMissingColumnError(error, "model_answer")) {
+      generatedQuestionModelAnswerAvailable = false;
+
+      console.warn(
+        "[api/generate-question] model_answer unavailable on generated_questions",
+      );
+
+      return fetchGeneratedQuestionRows({
+        excludeQuestionIds,
+        questionFilterMode,
+        selectedSubtopicIds,
+        supabase,
+      });
+    }
+
+    throw new Error(error.message);
+  }
+
+  if (includeModelAnswer) {
+    generatedQuestionModelAnswerAvailable = true;
+  }
+
+  return (data ?? [])
+    .map((row) => normalizeGeneratedQuestionRow(row))
+    .filter((row) => !excludeQuestionIds.includes(toNumericId(row.id)));
+}
+
+type GeneratedQuestionRecordWithOptionalModelAnswer =
+  Omit<GeneratedQuestionRecord, "model_answer"> & {
+    model_answer?: string | null;
+  };
+
+function buildGeneratedQuestionSelect(includeModelAnswer: boolean) {
+  const selectColumns = [
+    "id",
+    "subtopic_id",
+    "question_text",
+    "marks",
+    "question_type",
+    "answer_focus",
+    "status",
+  ];
+
+  if (includeModelAnswer) {
+    selectColumns.push("model_answer");
+  }
+
+  return selectColumns.join(", ");
+}
+
+function normalizeGeneratedQuestionRow(row: unknown): GeneratedQuestionRecord {
+  const questionRow = row as GeneratedQuestionRecordWithOptionalModelAnswer;
+
+  return {
+    ...questionRow,
+    model_answer: questionRow.model_answer ?? null,
+  };
+}
+
+function normalizeStoredModelAnswer(modelAnswer: string | null) {
+  if (typeof modelAnswer !== "string") {
+    return null;
+  }
+
+  const trimmedModelAnswer = modelAnswer.trim();
+
+  return trimmedModelAnswer.length > 0 ? trimmedModelAnswer : null;
+}
+
+function isMissingColumnError(caughtError: unknown, columnName: string) {
+  const errorMessage =
+    caughtError instanceof Error ? caughtError.message : String(caughtError);
+
+  return errorMessage.toLowerCase().includes(columnName.toLowerCase());
+}
+
+function logGenerateQuestionDebug(
+  message: string,
+  details: Record<string, unknown>,
+) {
+  if (!SHOULD_LOG_GENERATE_QUESTION_DEBUG) {
+    return;
+  }
+
+  console.info(`[api/generate-question][debug] ${message}`, details);
 }
 
 function createErrorResult(

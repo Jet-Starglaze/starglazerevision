@@ -10,6 +10,7 @@ export type GeneratedQuestionRecord = {
   marks: number;
   question_type: string | null;
   answer_focus: string | null;
+  model_answer: string | null;
   status: string | null;
 };
 
@@ -19,12 +20,14 @@ type GeneratedRubricPointRow = {
   order_number: number;
 };
 
-type GeneratedRubricPointRowWithConceptGroup = GeneratedRubricPointRow & {
+type GeneratedRubricPointRowWithOptionalMetadata = GeneratedRubricPointRow & {
   concept_group: string | null;
+  required_area: string | null;
 };
 
 export type GeneratedMarkingRubricPoint = PracticeRubricPoint & {
   conceptGroup: string | null;
+  requiredArea: string | null;
 };
 
 type QuestionForeignKeyColumn = "generated_question_id" | "question_id";
@@ -33,33 +36,50 @@ const generatedQuestionForeignKeyColumns: readonly QuestionForeignKeyColumn[] = 
   "generated_question_id",
   "question_id",
 ];
+let generatedQuestionModelAnswerAvailable: boolean | null = null;
 let generatedRubricPointConceptGroupAvailable: boolean | null = null;
+let generatedRubricPointRequiredAreaAvailable: boolean | null = null;
 
 export async function fetchGeneratedQuestionById(
   supabase: SupabaseServerClient,
   generatedQuestionId: number | string,
 ): Promise<GeneratedQuestionRecord | null> {
-  const { data, error } = await supabase
-    .from("generated_questions")
-    .select(
-      `
-        id,
-        subtopic_id,
-        question_text,
-        marks,
-        question_type,
-        answer_focus,
-        status
-      `,
-    )
-    .eq("id", toNumericId(generatedQuestionId))
-    .maybeSingle();
+  const includeModelAnswer = generatedQuestionModelAnswerAvailable !== false;
 
-  if (error) {
-    throw new Error(`Failed to load generated question: ${error.message}`);
+  try {
+    const { data, error } = await supabase
+      .from("generated_questions")
+      .select(buildGeneratedQuestionSelect(includeModelAnswer))
+      .eq("id", toNumericId(generatedQuestionId))
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to load generated question: ${error.message}`);
+    }
+
+    if (includeModelAnswer) {
+      generatedQuestionModelAnswerAvailable = true;
+    }
+
+    return normalizeGeneratedQuestionRecord(
+      (data ?? null) as GeneratedQuestionRecordWithOptionalModelAnswer | null,
+    );
+  } catch (caughtError) {
+    if (includeModelAnswer && isMissingColumnError(caughtError, "model_answer")) {
+      generatedQuestionModelAnswerAvailable = false;
+
+      console.warn(
+        "[practice-generated-content] model_answer unavailable on generated_questions",
+        {
+          generatedQuestionId: String(generatedQuestionId),
+        },
+      );
+
+      return fetchGeneratedQuestionById(supabase, generatedQuestionId);
+    }
+
+    throw caughtError;
   }
-
-  return (data ?? null) as GeneratedQuestionRecord | null;
 }
 
 export async function fetchGeneratedRubricPoints(
@@ -87,7 +107,7 @@ export async function fetchGeneratedRubricPointsForMarking(
   supabase: SupabaseServerClient,
   questionId: number | string,
 ): Promise<GeneratedMarkingRubricPoint[]> {
-  const rows = await fetchGeneratedRubricPointsWithOptionalConceptGroup(
+  const rows = await fetchGeneratedRubricPointsWithOptionalMetadata(
     supabase,
     questionId,
   );
@@ -99,6 +119,7 @@ export async function fetchGeneratedRubricPointsForMarking(
       pointText: point.point_text,
       orderNumber: point.order_number,
       conceptGroup: point.concept_group ?? null,
+      requiredArea: point.required_area ?? null,
     }));
 }
 
@@ -176,67 +197,135 @@ async function fetchGeneratedRowsByQuestionId<T>({
   throw new Error(`Failed to load ${table}: ${attemptedErrors.join("; ")}`);
 }
 
-async function fetchGeneratedRubricPointsWithOptionalConceptGroup(
+async function fetchGeneratedRubricPointsWithOptionalMetadata(
   supabase: SupabaseServerClient,
   questionId: number | string,
-): Promise<GeneratedRubricPointRowWithConceptGroup[]> {
-  if (generatedRubricPointConceptGroupAvailable === false) {
-    const rows = await fetchGeneratedRowsByQuestionId<GeneratedRubricPointRow>({
-      supabase,
-      table: "generated_rubric_points",
-      select: "id, point_text, order_number",
-      questionId,
-      orderColumn: "order_number",
-    });
-
-    return rows.map((point) => ({
-      ...point,
-      concept_group: null,
-    }));
-  }
+): Promise<GeneratedRubricPointRowWithOptionalMetadata[]> {
+  const includeConceptGroup = generatedRubricPointConceptGroupAvailable !== false;
+  const includeRequiredArea = generatedRubricPointRequiredAreaAvailable !== false;
 
   try {
     const rows =
-      await fetchGeneratedRowsByQuestionId<GeneratedRubricPointRowWithConceptGroup>(
-        {
-          supabase,
-          table: "generated_rubric_points",
-          select: "id, point_text, order_number, concept_group",
-          questionId,
-          orderColumn: "order_number",
-        },
-      );
+      await fetchGeneratedRowsByQuestionId<
+        GeneratedRubricPointRow & {
+          concept_group?: string | null;
+          required_area?: string | null;
+        }
+      >({
+        supabase,
+        table: "generated_rubric_points",
+        select: buildGeneratedRubricPointMetadataSelect({
+          includeConceptGroup,
+          includeRequiredArea,
+        }),
+        questionId,
+        orderColumn: "order_number",
+      });
 
-    generatedRubricPointConceptGroupAvailable = true;
-
-    return rows;
-  } catch (caughtError) {
-    if (!isMissingColumnError(caughtError, "concept_group")) {
-      throw caughtError;
+    if (includeConceptGroup) {
+      generatedRubricPointConceptGroupAvailable = true;
     }
 
-    generatedRubricPointConceptGroupAvailable = false;
-
-    console.warn(
-      "[practice-generated-content] concept_group unavailable on generated_rubric_points",
-      {
-        questionId: String(questionId),
-      },
-    );
-
-    const rows = await fetchGeneratedRowsByQuestionId<GeneratedRubricPointRow>({
-      supabase,
-      table: "generated_rubric_points",
-      select: "id, point_text, order_number",
-      questionId,
-      orderColumn: "order_number",
-    });
+    if (includeRequiredArea) {
+      generatedRubricPointRequiredAreaAvailable = true;
+    }
 
     return rows.map((point) => ({
       ...point,
-      concept_group: null,
+      concept_group: point.concept_group ?? null,
+      required_area: point.required_area ?? null,
     }));
+  } catch (caughtError) {
+    if (
+      includeConceptGroup &&
+      isMissingColumnError(caughtError, "concept_group")
+    ) {
+      generatedRubricPointConceptGroupAvailable = false;
+
+      console.warn(
+        "[practice-generated-content] concept_group unavailable on generated_rubric_points",
+        {
+          questionId: String(questionId),
+        },
+      );
+
+      return fetchGeneratedRubricPointsWithOptionalMetadata(supabase, questionId);
+    }
+
+    if (
+      includeRequiredArea &&
+      isMissingColumnError(caughtError, "required_area")
+    ) {
+      generatedRubricPointRequiredAreaAvailable = false;
+
+      console.warn(
+        "[practice-generated-content] required_area unavailable on generated_rubric_points",
+        {
+          questionId: String(questionId),
+        },
+      );
+
+      return fetchGeneratedRubricPointsWithOptionalMetadata(supabase, questionId);
+    }
+
+    throw caughtError;
   }
+}
+
+function buildGeneratedRubricPointMetadataSelect({
+  includeConceptGroup,
+  includeRequiredArea,
+}: {
+  includeConceptGroup: boolean;
+  includeRequiredArea: boolean;
+}) {
+  const selectColumns = ["id", "point_text", "order_number"];
+
+  if (includeConceptGroup) {
+    selectColumns.push("concept_group");
+  }
+
+  if (includeRequiredArea) {
+    selectColumns.push("required_area");
+  }
+
+  return selectColumns.join(", ");
+}
+
+type GeneratedQuestionRecordWithOptionalModelAnswer =
+  Omit<GeneratedQuestionRecord, "model_answer"> & {
+    model_answer?: string | null;
+  };
+
+function buildGeneratedQuestionSelect(includeModelAnswer: boolean) {
+  const selectColumns = [
+    "id",
+    "subtopic_id",
+    "question_text",
+    "marks",
+    "question_type",
+    "answer_focus",
+    "status",
+  ];
+
+  if (includeModelAnswer) {
+    selectColumns.push("model_answer");
+  }
+
+  return selectColumns.join(", ");
+}
+
+function normalizeGeneratedQuestionRecord(
+  row: GeneratedQuestionRecordWithOptionalModelAnswer | null,
+): GeneratedQuestionRecord | null {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    ...row,
+    model_answer: row.model_answer ?? null,
+  };
 }
 
 function isMissingColumnError(caughtError: unknown, columnName: string) {
