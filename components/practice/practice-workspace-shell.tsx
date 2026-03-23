@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -14,6 +15,7 @@ import PracticeSessionPanel from "@/components/practice/practice-session-panel";
 import { formatRubricPointDisplayText } from "@/lib/marking/rubric-display";
 import type {
   ApiErrorResponse,
+  GenerateQuestionSelectionStrategy,
   GenerateQuestionResponse,
   MarkAnswerResponse,
 } from "@/lib/mock-biology-practice-api";
@@ -50,6 +52,7 @@ type PracticeAttempt = {
   attemptNumber: number;
   answer: string;
   feedback: MarkAnswerResponse;
+  isFeedbackCollapsed: boolean;
 };
 
 type SessionThread = {
@@ -73,6 +76,7 @@ type PrefetchedNextQuestionRequest = {
 type FetchGeneratedQuestionOptions = {
   excludeQuestionIds: number[];
   requestToken: number;
+  selectionStrategy?: GenerateQuestionSelectionStrategy;
   suppressErrors?: boolean;
 };
 
@@ -116,6 +120,7 @@ export default function PracticeWorkspaceShell({
   const [answerReviewElapsedMs, setAnswerReviewElapsedMs] = useState(0);
   const [isDesktopSessionPanelCollapsed, setIsDesktopSessionPanelCollapsed] =
     useState(false);
+  const [composerFocusSequence, setComposerFocusSequence] = useState(0);
   const centerScrollContainerRef = useRef<HTMLDivElement>(null);
   const previousSelectionKeyRef = useRef(selectionKey);
   const sessionRequestTokenRef = useRef(0);
@@ -273,6 +278,7 @@ export default function PracticeWorkspaceShell({
     async ({
       excludeQuestionIds,
       requestToken,
+      selectionStrategy = "weighted",
       suppressErrors = false,
     }: FetchGeneratedQuestionOptions) => {
       const response = await fetch("/api/generate-question", {
@@ -287,6 +293,7 @@ export default function PracticeWorkspaceShell({
           questionFilterMode,
           sessionLength,
           questionCursor,
+          selectionStrategy,
         }),
       });
       const body = await readResponseBody(response);
@@ -338,6 +345,7 @@ export default function PracticeWorkspaceShell({
     const prefetchPromise = fetchGeneratedQuestion({
       excludeQuestionIds: sessionQuestionIds,
       requestToken,
+      selectionStrategy: "weighted",
       suppressErrors: true,
     })
       .then((nextQuestion) => {
@@ -414,6 +422,7 @@ export default function PracticeWorkspaceShell({
     setAnswerReviewStartedAt(null);
     setAnswerReviewElapsedMs(0);
     setIsDesktopSessionPanelCollapsed(false);
+    setComposerFocusSequence(0);
 
     if (resetControls) {
       setQuestionFilterMode(DEFAULT_QUESTION_FILTER_MODE);
@@ -461,6 +470,7 @@ export default function PracticeWorkspaceShell({
     setGenerationError(null);
     setAnswerError(null);
     setIsDesktopSessionPanelCollapsed(true);
+    setComposerFocusSequence((current) => current + 1);
   }
 
   async function handleGenerateQuestion() {
@@ -480,6 +490,10 @@ export default function PracticeWorkspaceShell({
     }
 
     const requestToken = sessionRequestTokenRef.current;
+    const selectionStrategy: GenerateQuestionSelectionStrategy =
+      sessionThreads.length === 0 && completedQuestionCount === 0
+        ? "fast-initial"
+        : "weighted";
 
     setGenerationError(null);
     setAnswerError(null);
@@ -496,6 +510,7 @@ export default function PracticeWorkspaceShell({
       const nextQuestion = await fetchGeneratedQuestion({
         excludeQuestionIds: sessionQuestionIds,
         requestToken,
+        selectionStrategy,
       });
 
       if (!nextQuestion || requestToken !== sessionRequestTokenRef.current) {
@@ -570,6 +585,7 @@ export default function PracticeWorkspaceShell({
         attemptNumber: nextAttemptNumber,
         answer: trimmedAnswer,
         feedback: body,
+        isFeedbackCollapsed: false,
       };
 
       const completed = hasReachedCompletionThreshold(body);
@@ -577,14 +593,21 @@ export default function PracticeWorkspaceShell({
       setSessionThreads((current) =>
         updateActiveThread(current, (thread) => ({
           ...thread,
-          attempts: [...thread.attempts, nextAttempt],
-          stage: completed ? "complete" : "feedback",
+          attempts: [
+            ...thread.attempts.map((attempt) => ({
+              ...attempt,
+              isFeedbackCollapsed: true,
+            })),
+            nextAttempt,
+          ],
+          stage: completed ? "complete" : "improving",
           isCollapsed: completed ? true : thread.isCollapsed,
         })),
       );
 
       if (!completed) {
         setAnswerDraft(trimmedAnswer);
+        setComposerFocusSequence((current) => current + 1);
         return;
       }
 
@@ -624,6 +647,7 @@ export default function PracticeWorkspaceShell({
         const nextQuestion = await fetchGeneratedQuestion({
           excludeQuestionIds: sessionQuestionIds,
           requestToken,
+          selectionStrategy: "weighted",
         });
 
         if (!nextQuestion || requestToken !== sessionRequestTokenRef.current) {
@@ -653,19 +677,27 @@ export default function PracticeWorkspaceShell({
     }
   }
 
-  function handleImproveAnswer() {
-    if (!activeThread || activeThread.attempts.length === 0) {
-      return;
-    }
-
-    setAnswerError(null);
+  function toggleAttemptFeedbackCollapse(
+    threadId: string,
+    attemptNumber: number,
+  ) {
     setSessionThreads((current) =>
-      updateActiveThread(current, (thread) => ({
-        ...thread,
-        stage: "improving",
-      })),
+      current.map((thread) =>
+        thread.threadId === threadId
+          ? {
+              ...thread,
+              attempts: thread.attempts.map((attempt) =>
+                attempt.attemptNumber === attemptNumber
+                  ? {
+                      ...attempt,
+                      isFeedbackCollapsed: !attempt.isFeedbackCollapsed,
+                    }
+                  : attempt,
+              ),
+            }
+          : thread,
+      ),
     );
-    setAnswerDraft(getLatestAttempt(activeThread)?.answer ?? "");
   }
 
   function toggleCompletedThread(threadId: string) {
@@ -681,7 +713,7 @@ export default function PracticeWorkspaceShell({
   return (
     <section className="relative flex min-h-full min-w-0 bg-slate-50 dark:bg-slate-950 xl:h-full xl:min-h-0 xl:overflow-hidden">
       <div
-        className={`grid min-h-full min-w-0 flex-1 ${desktopLayoutClass} xl:h-full xl:min-h-0`}
+        className={`grid min-h-full min-w-0 flex-1 ${desktopLayoutClass} xl:h-full xl:min-h-0 xl:transition-[grid-template-columns] xl:duration-200 xl:ease-out motion-reduce:transition-none`}
       >
         <div className="flex min-h-0 min-w-0 flex-col bg-slate-50 dark:bg-slate-950">
           <div
@@ -760,6 +792,12 @@ export default function PracticeWorkspaceShell({
                     thread.stage === "complete" ? (
                       <CompletedPracticeThread
                         key={thread.threadId}
+                        onToggleAttemptFeedbackCollapse={(attemptNumber) =>
+                          toggleAttemptFeedbackCollapse(
+                            thread.threadId,
+                            attemptNumber,
+                          )
+                        }
                         onToggleCollapse={() => toggleCompletedThread(thread.threadId)}
                         thread={thread}
                         threadNumber={index + 1}
@@ -769,16 +807,17 @@ export default function PracticeWorkspaceShell({
                         answerDraft={answerDraft}
                         answerError={answerError}
                         answerReviewTimerLabel={answerReviewTimerLabel}
+                        composerFocusTrigger={composerFocusSequence}
                         isMarkingAnswer={isMarkingAnswer}
                         key={thread.threadId}
                         onAnswerDraftChange={handleAnswerDraftChange}
-                        onImproveAnswer={
-                          thread.stage === "feedback" &&
-                          thread.attempts.length > 0
-                            ? handleImproveAnswer
-                            : null
-                        }
                         onSubmitAnswer={handleSubmitAnswer}
+                        onToggleAttemptFeedbackCollapse={(attemptNumber) =>
+                          toggleAttemptFeedbackCollapse(
+                            thread.threadId,
+                            attemptNumber,
+                          )
+                        }
                         thread={thread}
                         threadNumber={index + 1}
                       />
@@ -812,32 +851,52 @@ export default function PracticeWorkspaceShell({
         </div>
 
         <div className="hidden xl:block xl:min-h-0">
-          {isDesktopSessionPanelCollapsed ? (
-            <DesktopSessionRail
-              onExpand={() => setIsDesktopSessionPanelCollapsed(false)}
-            />
-          ) : (
-            <PracticeSessionPanel
-              answerDraft={answerDraft}
-              canReset={canResetSession}
-              currentQuestion={currentQuestion}
-              generateButtonLabel={primaryActionLabel}
-              generationError={generationError}
-              isDeemphasized={isSessionInProgress}
-              isGeneratingQuestion={isGeneratingQuestion}
-              isSessionComplete={isSessionComplete}
-              onCollapse={() => setIsDesktopSessionPanelCollapsed(true)}
-              onGenerateQuestion={handleGenerateQuestion}
-              onQuestionFilterModeChange={handleQuestionFilterModeChange}
-              onResetSession={resetSession}
-              onSessionLengthChange={handleSessionLengthChange}
-              progressLabel={sessionProgressLabel}
-              progressMessage={sessionProgressMessage}
-              questionFilterMode={questionFilterMode}
-              selectedSubtopics={selectedSubtopics}
-              sessionLength={sessionLength}
-            />
-          )}
+          <div className="relative h-full overflow-hidden">
+            <div
+              aria-hidden={!isDesktopSessionPanelCollapsed}
+              className={`absolute inset-0 transition-[transform,opacity] duration-200 ease-out motion-reduce:transition-none ${
+                isDesktopSessionPanelCollapsed
+                  ? "translate-x-0 opacity-100"
+                  : "translate-x-5 opacity-0 pointer-events-none"
+              }`}
+              inert={!isDesktopSessionPanelCollapsed}
+            >
+              <DesktopSessionRail
+                onExpand={() => setIsDesktopSessionPanelCollapsed(false)}
+              />
+            </div>
+
+            <div
+              aria-hidden={isDesktopSessionPanelCollapsed}
+              className={`absolute inset-0 transition-[transform,opacity] duration-200 ease-out motion-reduce:transition-none ${
+                isDesktopSessionPanelCollapsed
+                  ? "translate-x-5 opacity-0 pointer-events-none"
+                  : "translate-x-0 opacity-100"
+              }`}
+              inert={isDesktopSessionPanelCollapsed}
+            >
+              <PracticeSessionPanel
+                answerDraft={answerDraft}
+                canReset={canResetSession}
+                currentQuestion={currentQuestion}
+                generateButtonLabel={primaryActionLabel}
+                generationError={generationError}
+                isDeemphasized={isSessionInProgress}
+                isGeneratingQuestion={isGeneratingQuestion}
+                isSessionComplete={isSessionComplete}
+                onCollapse={() => setIsDesktopSessionPanelCollapsed(true)}
+                onGenerateQuestion={handleGenerateQuestion}
+                onQuestionFilterModeChange={handleQuestionFilterModeChange}
+                onResetSession={resetSession}
+                onSessionLengthChange={handleSessionLengthChange}
+                progressLabel={sessionProgressLabel}
+                progressMessage={sessionProgressMessage}
+                questionFilterMode={questionFilterMode}
+                selectedSubtopics={selectedSubtopics}
+                sessionLength={sessionLength}
+              />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -998,10 +1057,11 @@ type ActivePracticeThreadProps = {
   answerDraft: string;
   answerError: string | null;
   answerReviewTimerLabel: string | null;
+  composerFocusTrigger: number;
   isMarkingAnswer: boolean;
   onAnswerDraftChange: (value: string) => void;
   onSubmitAnswer: () => void;
-  onImproveAnswer: (() => void) | null;
+  onToggleAttemptFeedbackCollapse: (attemptNumber: number) => void;
 };
 
 function ActivePracticeThread({
@@ -1010,23 +1070,46 @@ function ActivePracticeThread({
   answerDraft,
   answerError,
   answerReviewTimerLabel,
+  composerFocusTrigger,
   isMarkingAnswer,
   onAnswerDraftChange,
   onSubmitAnswer,
-  onImproveAnswer,
+  onToggleAttemptFeedbackCollapse,
 }: ActivePracticeThreadProps) {
-  const isImproving = thread.stage === "improving";
+  const composerRegionRef = useRef<HTMLDivElement>(null);
+  const latestAttempt = getLatestAttempt(thread);
+  const isImproving =
+    thread.stage === "improving" || thread.stage === "feedback";
   const shouldShowComposer =
-    thread.stage === "question" || thread.stage === "improving";
+    thread.stage === "question" ||
+    thread.stage === "improving" ||
+    thread.stage === "feedback";
   const nextAttemptNumber = getNextAttemptNumber(thread);
-  const submitLabel = isMarkingAnswer
-    ? "Reviewing answer..."
+  const submitAriaLabel = isMarkingAnswer
+    ? "Reviewing answer"
     : thread.attempts.length > 0
       ? `Submit attempt ${nextAttemptNumber}`
       : "Submit answer";
 
+  useEffect(() => {
+    if (!shouldShowComposer || composerFocusTrigger === 0) {
+      return;
+    }
+
+    const composerRegion = composerRegionRef.current;
+
+    if (!composerRegion) {
+      return;
+    }
+
+    composerRegion.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+    });
+  }, [composerFocusTrigger, shouldShowComposer]);
+
   return (
-    <article className="space-y-6 rounded-[30px] border border-slate-200 bg-white px-4 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:px-5 sm:py-5">
+    <article className="space-y-5 rounded-[30px] border border-slate-200 bg-white px-4 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:px-5 sm:py-5">
       <QuestionThreadHeader
         isCondensed={thread.attempts.length > 0 || isImproving}
         question={thread.question}
@@ -1034,12 +1117,19 @@ function ActivePracticeThread({
       />
 
       {thread.attempts.length > 0 ? (
-        <div className="space-y-5">
+        <div className="space-y-4">
           {thread.attempts.map((attempt) => (
             <ThreadTurn
               attempt={attempt}
+              isGuidancePrimary={
+                attempt.attemptNumber === latestAttempt?.attemptNumber &&
+                isImproving
+              }
               key={attempt.attemptNumber}
               modelAnswer={thread.question.modelAnswer}
+              onToggleFeedbackCollapse={() =>
+                onToggleAttemptFeedbackCollapse(attempt.attemptNumber)
+              }
             />
           ))}
         </div>
@@ -1047,29 +1137,11 @@ function ActivePracticeThread({
         <ThreadStartState />
       )}
 
-      {onImproveAnswer ? (
-        <ThreadActionBar
-          action={
-            <button
-              className={`${primaryButtonClass} shrink-0`}
-              onClick={onImproveAnswer}
-              type="button"
-            >
-              Improve answer
-            </button>
-          }
-          message="Review the feedback, then write a stronger next attempt in the composer below."
-        />
-      ) : null}
-
-      {isImproving ? (
-        <ThreadActionBar
-          message={`Drafting attempt ${nextAttemptNumber}. Your revised answer will appear here as the next turn once you submit it.`}
-        />
-      ) : null}
-
       {shouldShowComposer ? (
-        <div className="space-y-3 border-t border-slate-200/80 pt-5 dark:border-slate-800/80">
+        <div
+          className="space-y-2.5 border-t border-slate-200/80 pt-4 dark:border-slate-800/80"
+          ref={composerRegionRef}
+        >
           {answerError ? (
             <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
               {answerError}
@@ -1078,11 +1150,13 @@ function ActivePracticeThread({
 
           <PracticeInputBar
             footerNote={answerReviewTimerLabel}
+            focusTrigger={composerFocusTrigger}
+            isRewriteEmphasized={shouldShowComposer}
             onSubmit={onSubmitAnswer}
             onValueChange={onAnswerDraftChange}
             readOnly={isMarkingAnswer}
             submitDisabled={isMarkingAnswer || answerDraft.trim().length === 0}
-            submitLabel={submitLabel}
+            submitAriaLabel={submitAriaLabel}
             value={answerDraft}
           />
         </div>
@@ -1095,12 +1169,14 @@ type CompletedPracticeThreadProps = {
   thread: SessionThread;
   threadNumber: number;
   onToggleCollapse: () => void;
+  onToggleAttemptFeedbackCollapse: (attemptNumber: number) => void;
 };
 
 function CompletedPracticeThread({
   thread,
   threadNumber,
   onToggleCollapse,
+  onToggleAttemptFeedbackCollapse,
 }: CompletedPracticeThreadProps) {
   const firstAttempt = thread.attempts[0] ?? null;
   const finalAttempt = thread.attempts[thread.attempts.length - 1] ?? null;
@@ -1191,6 +1267,9 @@ function CompletedPracticeThread({
                   attempt={attempt}
                   key={attempt.attemptNumber}
                   modelAnswer={thread.question.modelAnswer}
+                  onToggleFeedbackCollapse={() =>
+                    onToggleAttemptFeedbackCollapse(attempt.attemptNumber)
+                  }
                 />
               ))}
             </div>
@@ -1269,13 +1348,21 @@ function ThreadStartState() {
 
 type ThreadTurnProps = {
   attempt: PracticeAttempt;
+  isGuidancePrimary?: boolean;
   modelAnswer: string | null;
+  onToggleFeedbackCollapse: () => void;
 };
 
 type RubricAssessmentItem = MarkAnswerResponse["rubricAssessment"][number];
 
-function ThreadTurn({ attempt, modelAnswer }: ThreadTurnProps) {
+function ThreadTurn({
+  attempt,
+  isGuidancePrimary = false,
+  modelAnswer,
+  onToggleFeedbackCollapse,
+}: ThreadTurnProps) {
   const [isModelAnswerVisible, setIsModelAnswerVisible] = useState(false);
+  const feedbackPanelId = useId();
   const correctItems = attempt.feedback.rubricAssessment.filter(
     (item) => item.status === "present",
   );
@@ -1288,9 +1375,12 @@ function ThreadTurn({ attempt, modelAnswer }: ThreadTurnProps) {
   const hasModelAnswer =
     typeof modelAnswer === "string" && modelAnswer.trim().length > 0;
   const offTopicPoints = attempt.feedback.feedback.offTopicPoints ?? [];
+  const feedbackToggleLabel = attempt.isFeedbackCollapsed
+    ? "Show AI review"
+    : "Hide AI review";
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3.5">
       <ThreadBlock
         align="right"
         caption={`Your answer - Attempt ${attempt.attemptNumber}`}
@@ -1305,44 +1395,93 @@ function ThreadTurn({ attempt, modelAnswer }: ThreadTurnProps) {
         align="left"
         caption={`AI review - Attempt ${attempt.attemptNumber}`}
         headerTrailing={
-          <span className="inline-flex rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-            {attempt.feedback.score}/{attempt.feedback.maxScore}
-          </span>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className="inline-flex rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+              {attempt.feedback.score}/{attempt.feedback.maxScore}
+            </span>
+            <button
+              aria-controls={feedbackPanelId}
+              aria-expanded={!attempt.isFeedbackCollapsed}
+              className="inline-flex min-h-9 items-center gap-2 rounded-xl border border-slate-200 bg-white/80 px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
+              onClick={onToggleFeedbackCollapse}
+              type="button"
+            >
+              {feedbackToggleLabel}
+              <ThreadDisclosureIcon
+                className={`h-3.5 w-3.5 transition-transform duration-300 ease-out motion-reduce:transition-none ${
+                  attempt.isFeedbackCollapsed ? "-rotate-90" : "rotate-0"
+                }`}
+              />
+            </button>
+          </div>
         }
         tone="feedback"
       >
-        <div className="space-y-5">
-          <ReviewScoreSection feedback={attempt.feedback} />
-          <RubricAssessmentSection
-            emptyMessage="No mark points matched."
-            items={correctItems}
-            status="present"
-            title="Correct"
-          />
-          <RubricAssessmentSection
-            emptyMessage="No missing rubric points."
-            items={missingItems}
-            status="absent"
-            title="Missing"
-          />
-          {partialItems.length > 0 ? (
-            <RubricAssessmentSection
-              items={partialItems}
-              status="partial"
-              title="Partial"
-            />
+        <div className="space-y-3">
+          {attempt.isFeedbackCollapsed ? (
+            <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
+              AI review hidden while you draft. Reopen it anytime if you want to
+              check the feedback again.
+            </p>
           ) : null}
-          <NextDraftTargetSection nextStep={attempt.feedback.feedback.nextStep} />
-          {offTopicPoints.length > 0 ? (
-            <OffTopicContentSection offTopicPoints={offTopicPoints} />
-          ) : null}
-          {hasModelAnswer ? (
-            <ModelAnswerSection
-              isVisible={isModelAnswerVisible}
-              modelAnswer={modelAnswer}
-              onToggle={() => setIsModelAnswerVisible((current) => !current)}
-            />
-          ) : null}
+
+          <div
+            aria-hidden={attempt.isFeedbackCollapsed}
+            className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out motion-reduce:transition-none ${
+              attempt.isFeedbackCollapsed
+                ? "grid-rows-[0fr] opacity-0"
+                : "grid-rows-[1fr] opacity-100"
+            }`}
+            id={feedbackPanelId}
+          >
+            <div className="overflow-hidden">
+              <div
+                className={`space-y-5 transition-transform duration-300 ease-out motion-reduce:transition-none ${
+                  attempt.isFeedbackCollapsed ? "-translate-y-2" : "translate-y-0"
+                }`}
+              >
+                <ReviewScoreSection
+                  feedback={attempt.feedback}
+                  isEmphasized={isGuidancePrimary}
+                />
+                <NextDraftTargetSection
+                  isEmphasized={isGuidancePrimary}
+                  nextStep={attempt.feedback.feedback.nextStep}
+                />
+                <div className={isGuidancePrimary ? "space-y-5 opacity-90" : "space-y-5"}>
+                  <RubricAssessmentSection
+                    emptyMessage="No mark points matched."
+                    items={correctItems}
+                    status="present"
+                    title="Correct"
+                  />
+                  <RubricAssessmentSection
+                    emptyMessage="No missing rubric points."
+                    items={missingItems}
+                    status="absent"
+                    title="Missing"
+                  />
+                  {partialItems.length > 0 ? (
+                    <RubricAssessmentSection
+                      items={partialItems}
+                      status="partial"
+                      title="Partial"
+                    />
+                  ) : null}
+                </div>
+                {offTopicPoints.length > 0 ? (
+                  <OffTopicContentSection offTopicPoints={offTopicPoints} />
+                ) : null}
+                {hasModelAnswer ? (
+                  <ModelAnswerSection
+                    isVisible={isModelAnswerVisible}
+                    modelAnswer={modelAnswer}
+                    onToggle={() => setIsModelAnswerVisible((current) => !current)}
+                  />
+                ) : null}
+              </div>
+            </div>
+          </div>
         </div>
       </ThreadBlock>
     </div>
@@ -1351,16 +1490,36 @@ function ThreadTurn({ attempt, modelAnswer }: ThreadTurnProps) {
 
 type ReviewScoreSectionProps = {
   feedback: MarkAnswerResponse;
+  isEmphasized?: boolean;
 };
 
-function ReviewScoreSection({ feedback }: ReviewScoreSectionProps) {
+function ReviewScoreSection({
+  feedback,
+  isEmphasized = false,
+}: ReviewScoreSectionProps) {
   return (
-    <section className="rounded-[22px] border border-slate-200 bg-white/85 px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+    <section
+      className={`rounded-[22px] border px-4 py-4 ${
+        isEmphasized
+          ? "border-sky-200 bg-sky-50/75 shadow-sm dark:border-sky-500/30 dark:bg-sky-500/12"
+          : "border-slate-200 bg-white/85 dark:border-slate-800 dark:bg-slate-900/80"
+      }`}
+    >
+      <p
+        className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${
+          isEmphasized
+            ? "text-sky-700 dark:text-sky-200"
+            : "text-slate-500 dark:text-slate-400"
+        }`}
+      >
         Score
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-3">
-        <p className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">
+        <p
+          className={`font-semibold tracking-tight text-slate-950 dark:text-white ${
+            isEmphasized ? "text-[2rem]" : "text-2xl"
+          }`}
+        >
           {feedback.score}/{feedback.maxScore}
         </p>
       </div>
@@ -1497,13 +1656,31 @@ function ReviewStatusMarker({
   );
 }
 
-function NextDraftTargetSection({ nextStep }: { nextStep: string }) {
+function NextDraftTargetSection({
+  nextStep,
+  isEmphasized = false,
+}: {
+  nextStep: string;
+  isEmphasized?: boolean;
+}) {
   return (
     <section className="space-y-3">
-      <p className="text-sm font-semibold text-slate-900 dark:text-white">
+      <p
+        className={`text-sm font-semibold ${
+          isEmphasized
+            ? "text-sky-800 dark:text-sky-100"
+            : "text-slate-900 dark:text-white"
+        }`}
+      >
         Next draft target
       </p>
-      <div className="rounded-[22px] border border-sky-200 bg-sky-50/80 px-4 py-3 text-sm leading-6 text-sky-950 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-100">
+      <div
+        className={`rounded-[22px] border px-4 py-3 text-sm leading-6 ${
+          isEmphasized
+            ? "border-sky-300 bg-sky-100/85 text-sky-950 shadow-sm dark:border-sky-400/40 dark:bg-sky-500/18 dark:text-sky-50"
+            : "border-sky-200 bg-sky-50/80 text-sky-950 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-100"
+        }`}
+      >
         {nextStep}
       </div>
     </section>
@@ -1574,22 +1751,6 @@ function ModelAnswerSection({
         </p>
       )}
     </section>
-  );
-}
-
-type ThreadActionBarProps = {
-  message: string;
-  action?: ReactNode;
-};
-
-function ThreadActionBar({ message, action }: ThreadActionBarProps) {
-  return (
-    <div className="flex flex-col gap-4 border-t border-slate-200/80 pt-5 dark:border-slate-800/80 sm:flex-row sm:items-start sm:justify-between">
-      <p className="max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-        {message}
-      </p>
-      {action}
-    </div>
   );
 }
 
@@ -1749,7 +1910,7 @@ function ThreadBlock({
       <section className={surfaceClass}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className={captionClass}>{caption}</p>
-          {tone === "feedback" ? null : headerTrailing}
+          {headerTrailing}
         </div>
         <div className="mt-3">{children}</div>
       </section>
@@ -1790,8 +1951,10 @@ function MobileSessionDrawer({
 }: MobileSessionDrawerProps) {
   return (
     <div
-      className={`fixed inset-y-0 right-0 z-50 w-full max-w-sm transition-transform duration-300 xl:hidden ${
-        isOpen ? "translate-x-0" : "translate-x-full"
+      className={`fixed inset-y-0 right-0 z-50 w-full max-w-sm transition-[transform,opacity] duration-200 ease-out will-change-transform xl:hidden ${
+        isOpen
+          ? "translate-x-0 opacity-100"
+          : "translate-x-full opacity-0 pointer-events-none"
       }`}
     >
       <div className="h-full overflow-y-auto">

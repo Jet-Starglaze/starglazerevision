@@ -27,6 +27,8 @@ export type PracticeStructuredFeedback = {
   offTopicPoints?: string[];
 };
 
+export type GenerateQuestionSelectionStrategy = "fast-initial" | "weighted";
+
 export type GenerateQuestionRequest = {
   subjectId: string;
   selectedSubtopicIds: number[];
@@ -34,6 +36,7 @@ export type GenerateQuestionRequest = {
   sessionLength: PracticeSessionLength;
   excludeQuestionIds?: number[];
   questionCursor?: number;
+  selectionStrategy?: GenerateQuestionSelectionStrategy;
 };
 
 export type GenerateQuestionResponse = {

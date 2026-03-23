@@ -158,7 +158,7 @@ export default function PracticeWorkspace({
       />
 
       <div
-        className={`grid min-h-[calc(100dvh-8rem)] w-full xl:h-full xl:min-h-0 ${desktopGridClass}`}
+        className={`grid min-h-[calc(100dvh-8rem)] w-full xl:h-full xl:min-h-0 xl:transition-[grid-template-columns] xl:duration-200 xl:ease-out motion-reduce:transition-none ${desktopGridClass}`}
       >
         <div className="hidden xl:block xl:min-h-0">
           <PracticeSidebar
@@ -230,8 +230,10 @@ function MobileSidebarDrawer({
 }: MobileSidebarDrawerProps) {
   return (
     <div
-      className={`fixed inset-y-0 left-0 z-50 w-full max-w-sm transition-transform duration-300 xl:hidden ${
-        isOpen ? "translate-x-0" : "-translate-x-full"
+      className={`fixed inset-y-0 left-0 z-50 w-full max-w-sm transition-[transform,opacity] duration-200 ease-out will-change-transform xl:hidden ${
+        isOpen
+          ? "translate-x-0 opacity-100"
+          : "-translate-x-full opacity-0 pointer-events-none"
       }`}
     >
       <div className="h-full overflow-y-auto">

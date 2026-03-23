@@ -10,6 +10,7 @@ import {
 } from "@/lib/mock-biology-practice";
 import type {
   ApiErrorResponse,
+  GenerateQuestionSelectionStrategy,
   GenerateQuestionResponse,
 } from "@/lib/mock-biology-practice-api";
 import {
@@ -67,6 +68,7 @@ const noApprovedQuestionsMessage =
 const questionLoadErrorMessage =
   "Could not load a generated question right now.";
 const authRequiredMessage = "Authentication required.";
+const FAST_INITIAL_QUESTION_WINDOW_SIZE = 12;
 const SHOULD_LOG_GENERATE_QUESTION_DEBUG =
   process.env.NODE_ENV === "development";
 let generatedQuestionModelAnswerAvailable: boolean | null = null;
@@ -91,6 +93,7 @@ export async function fetchPracticeQuestionFromSupabase(
     questionFilterMode,
     sessionLength,
     questionCursor,
+    selectionStrategy,
   } = payload;
 
   if (typeof subjectId !== "string" || subjectId.length === 0) {
@@ -150,11 +153,19 @@ export async function fetchPracticeQuestionFromSupabase(
     );
   }
 
+  if (
+    selectionStrategy !== undefined &&
+    !isGenerateQuestionSelectionStrategy(selectionStrategy)
+  ) {
+    return createErrorResult(400, "Invalid selectionStrategy");
+  }
+
   const uniqueSubtopicIds = uniqueIntegers(normalizedSubtopicIds);
   const uniqueExcludedQuestionIds = uniqueIntegers(normalizedExcludedQuestionIds);
   const supabase = await createClient();
   const userId = await getAuthenticatedUserId(supabase);
   const effectiveQuestionCursor = questionCursor ?? 0;
+  const effectiveSelectionStrategy = selectionStrategy ?? "weighted";
 
   if (!userId) {
     return createErrorResult(401, authRequiredMessage);
@@ -169,6 +180,7 @@ export async function fetchPracticeQuestionFromSupabase(
     questionFilterMode,
     sessionLength,
     questionCursor: effectiveQuestionCursor,
+    selectionStrategy: effectiveSelectionStrategy,
   });
 
   logGenerateQuestionDebug("query-filters", {
@@ -177,50 +189,30 @@ export async function fetchPracticeQuestionFromSupabase(
     statusFilter: "approved",
     questionFilterMode,
     marksFilter: describeMarksFilter(questionFilterMode),
+    selectionStrategy: effectiveSelectionStrategy,
   });
 
-  let questionRows: GeneratedQuestionRecord[];
-
   try {
-    questionRows = await fetchGeneratedQuestionRows({
-      excludeQuestionIds: uniqueExcludedQuestionIds,
-      questionFilterMode,
-      selectedSubtopicIds: uniqueSubtopicIds,
-      supabase,
-    });
-  } catch (caughtError) {
-    console.error("[api/generate-question] Failed to load generated questions", {
-      subjectId,
-      selectedSubtopicIds: uniqueSubtopicIds,
-      questionFilterMode,
-      message:
-        caughtError instanceof Error ? caughtError.message : String(caughtError),
-    });
-
-    return createErrorResult(500, questionLoadErrorMessage);
-  }
-
-  logGenerateQuestionDebug("query-rows-fetched", {
-    count: questionRows.length,
-    rows: questionRows.map(summarizeGeneratedQuestionRow),
-  });
-
-  if (questionRows.length === 0) {
-    return createErrorResult(404, noApprovedQuestionsMessage);
-  }
-
-  try {
-    const userQuestionProgress = await fetchUserQuestionProgressForQuestions(
-      supabase,
-      userId,
-      questionRows.map((row) => row.id),
-    );
-    const nextQuestion = await buildNextGeneratedQuestionResponse(
-      questionRows,
-      effectiveQuestionCursor,
-      supabase,
-      userQuestionProgress,
-    );
+    const nextQuestion =
+      effectiveSelectionStrategy === "fast-initial"
+        ? await selectFastInitialGeneratedQuestion({
+            effectiveQuestionCursor,
+            excludeQuestionIds: uniqueExcludedQuestionIds,
+            questionFilterMode,
+            selectedSubtopicIds: uniqueSubtopicIds,
+            subjectId,
+            supabase,
+            userId,
+          })
+        : await selectWeightedGeneratedQuestion({
+            effectiveQuestionCursor,
+            excludeQuestionIds: uniqueExcludedQuestionIds,
+            questionFilterMode,
+            selectedSubtopicIds: uniqueSubtopicIds,
+            subjectId,
+            supabase,
+            userId,
+          });
 
     if (!nextQuestion) {
       console.error(
@@ -229,6 +221,7 @@ export async function fetchPracticeQuestionFromSupabase(
           subjectId,
           selectedSubtopicIds: uniqueSubtopicIds,
           questionFilterMode,
+          selectionStrategy: effectiveSelectionStrategy,
         },
       );
 
@@ -243,12 +236,188 @@ export async function fetchPracticeQuestionFromSupabase(
     console.error("[api/generate-question] Failed to build generated question", {
       subjectId,
       questionCursor: questionCursor ?? 0,
+      selectionStrategy: effectiveSelectionStrategy,
       message:
         caughtError instanceof Error ? caughtError.message : String(caughtError),
     });
 
     return createErrorResult(500, questionLoadErrorMessage);
   }
+}
+
+async function selectFastInitialGeneratedQuestion({
+  effectiveQuestionCursor,
+  excludeQuestionIds,
+  questionFilterMode,
+  selectedSubtopicIds,
+  subjectId,
+  supabase,
+  userId,
+}: {
+  effectiveQuestionCursor: number;
+  excludeQuestionIds: number[];
+  questionFilterMode: PracticeQuestionFilterMode;
+  selectedSubtopicIds: number[];
+  subjectId: string;
+  supabase: SupabaseServerClient;
+  userId: string;
+}): Promise<GenerateQuestionResponse | null> {
+  const fastWindowRows = await loadGeneratedQuestionRows({
+    effectiveQuestionCursor,
+    excludeQuestionIds,
+    questionFilterMode,
+    selectedSubtopicIds,
+    subjectId,
+    supabase,
+    strategy: "fast-initial",
+    limit: FAST_INITIAL_QUESTION_WINDOW_SIZE,
+  });
+
+  logGenerateQuestionDebug("fast-initial-window", {
+    questionCursor: effectiveQuestionCursor,
+    requestedWindowSize: FAST_INITIAL_QUESTION_WINDOW_SIZE,
+    returnedWindowSize: fastWindowRows.length,
+  });
+
+  if (fastWindowRows.length === 0) {
+    return null;
+  }
+
+  const {
+    nextQuestion: fastInitialQuestion,
+    rowsAfterStatus,
+    rowsAfterQuestionType,
+    rowsAfterSubtopicContext,
+    rowsAfterRubric,
+  } = await buildNextQuestionFromOrderedRows(shuffleArray(fastWindowRows), supabase);
+
+  logGenerateQuestionDebug("fast-initial-filter-summary", {
+    totalFetchedRows: fastWindowRows.length,
+    rowsAfterStatus,
+    rowsAfterQuestionType,
+    rowsAfterSubtopicContext,
+    rowsAfterRubric,
+    acceptedQuestionId: fastInitialQuestion?.questionId ?? null,
+  });
+
+  if (fastInitialQuestion) {
+    return fastInitialQuestion;
+  }
+
+  logGenerateQuestionDebug("fast-initial-fallback", {
+    questionCursor: effectiveQuestionCursor,
+    fastWindowSize: fastWindowRows.length,
+    reason: "no valid question in fast window",
+  });
+
+  return selectWeightedGeneratedQuestion({
+    effectiveQuestionCursor,
+    excludeQuestionIds,
+    questionFilterMode,
+    selectedSubtopicIds,
+    subjectId,
+    supabase,
+    userId,
+  });
+}
+
+async function selectWeightedGeneratedQuestion({
+  effectiveQuestionCursor,
+  excludeQuestionIds,
+  questionFilterMode,
+  selectedSubtopicIds,
+  subjectId,
+  supabase,
+  userId,
+}: {
+  effectiveQuestionCursor: number;
+  excludeQuestionIds: number[];
+  questionFilterMode: PracticeQuestionFilterMode;
+  selectedSubtopicIds: number[];
+  subjectId: string;
+  supabase: SupabaseServerClient;
+  userId: string;
+}): Promise<GenerateQuestionResponse | null> {
+  const questionRows = await loadGeneratedQuestionRows({
+    effectiveQuestionCursor,
+    excludeQuestionIds,
+    questionFilterMode,
+    selectedSubtopicIds,
+    subjectId,
+    supabase,
+    strategy: "weighted",
+  });
+
+  if (questionRows.length === 0) {
+    return null;
+  }
+
+  const userQuestionProgress = await fetchUserQuestionProgressForQuestions(
+    supabase,
+    userId,
+    questionRows.map((row) => row.id),
+  );
+
+  return buildNextGeneratedQuestionResponse(
+    questionRows,
+    effectiveQuestionCursor,
+    supabase,
+    userQuestionProgress,
+  );
+}
+
+async function loadGeneratedQuestionRows({
+  effectiveQuestionCursor,
+  excludeQuestionIds,
+  questionFilterMode,
+  selectedSubtopicIds,
+  subjectId,
+  supabase,
+  strategy,
+  limit,
+}: {
+  effectiveQuestionCursor: number;
+  excludeQuestionIds: number[];
+  questionFilterMode: PracticeQuestionFilterMode;
+  selectedSubtopicIds: number[];
+  subjectId: string;
+  supabase: SupabaseServerClient;
+  strategy: GenerateQuestionSelectionStrategy;
+  limit?: number;
+}) {
+  let questionRows: GeneratedQuestionRecord[];
+
+  try {
+    questionRows = await fetchGeneratedQuestionRows({
+      excludeQuestionIds,
+      questionFilterMode,
+      selectedSubtopicIds,
+      supabase,
+      limit,
+    });
+  } catch (caughtError) {
+    console.error("[api/generate-question] Failed to load generated questions", {
+      subjectId,
+      selectedSubtopicIds,
+      questionFilterMode,
+      selectionStrategy: strategy,
+      limit: limit ?? null,
+      message:
+        caughtError instanceof Error ? caughtError.message : String(caughtError),
+    });
+
+    throw caughtError;
+  }
+
+  logGenerateQuestionDebug("query-rows-fetched", {
+    questionCursor: effectiveQuestionCursor,
+    selectionStrategy: strategy,
+    limit: limit ?? null,
+    count: questionRows.length,
+    rows: questionRows.map(summarizeGeneratedQuestionRow),
+  });
+
+  return questionRows;
 }
 
 async function buildNextGeneratedQuestionResponse(
@@ -273,7 +442,43 @@ async function buildNextGeneratedQuestionResponse(
     orderedQuestionIds: orderedQuestionRows.map((row) => String(row.id)),
   });
 
-  for (const row of orderedQuestionRows) {
+  ({
+    nextQuestion,
+    rowsAfterStatus,
+    rowsAfterQuestionType,
+    rowsAfterSubtopicContext,
+    rowsAfterRubric,
+  } = await buildNextQuestionFromOrderedRows(orderedQuestionRows, supabase));
+
+  logGenerateQuestionDebug("filter-summary", {
+    totalFetchedRows: orderedQuestionRows.length,
+    rowsAfterStatus,
+    rowsAfterQuestionType,
+    rowsAfterSubtopicContext,
+    rowsAfterRubric,
+    acceptedQuestionId: nextQuestion?.questionId ?? null,
+  });
+
+  return nextQuestion;
+}
+
+async function buildNextQuestionFromOrderedRows(
+  questionRows: GeneratedQuestionRecord[],
+  supabase: SupabaseServerClient,
+): Promise<{
+  nextQuestion: GenerateQuestionResponse | null;
+  rowsAfterStatus: number;
+  rowsAfterQuestionType: number;
+  rowsAfterSubtopicContext: number;
+  rowsAfterRubric: number;
+}> {
+  let rowsAfterStatus = 0;
+  let rowsAfterQuestionType = 0;
+  let rowsAfterSubtopicContext = 0;
+  let rowsAfterRubric = 0;
+  let nextQuestion: GenerateQuestionResponse | null = null;
+
+  for (const row of questionRows) {
     const buildResult = await buildGeneratedQuestionResponse(row, supabase);
 
     if (buildResult.accepted) {
@@ -291,7 +496,13 @@ async function buildNextGeneratedQuestionResponse(
       nextQuestion ??= buildResult.question;
 
       if (!SHOULD_LOG_GENERATE_QUESTION_DEBUG) {
-        return nextQuestion;
+        return {
+          nextQuestion,
+          rowsAfterStatus,
+          rowsAfterQuestionType,
+          rowsAfterSubtopicContext,
+          rowsAfterRubric,
+        };
       }
 
       continue;
@@ -324,16 +535,13 @@ async function buildNextGeneratedQuestionResponse(
     });
   }
 
-  logGenerateQuestionDebug("filter-summary", {
-    totalFetchedRows: orderedQuestionRows.length,
+  return {
+    nextQuestion,
     rowsAfterStatus,
     rowsAfterQuestionType,
     rowsAfterSubtopicContext,
     rowsAfterRubric,
-    acceptedQuestionId: nextQuestion?.questionId ?? null,
-  });
-
-  return nextQuestion;
+  };
 }
 
 async function buildGeneratedQuestionResponse(
@@ -674,11 +882,13 @@ async function fetchGeneratedQuestionRows({
   questionFilterMode,
   selectedSubtopicIds,
   supabase,
+  limit,
 }: {
   excludeQuestionIds: number[];
   questionFilterMode: PracticeQuestionFilterMode;
   selectedSubtopicIds: number[];
   supabase: SupabaseServerClient;
+  limit?: number;
 }): Promise<GeneratedQuestionRecord[]> {
   const includeModelAnswer = generatedQuestionModelAnswerAvailable !== false;
   let questionQuery = supabase
@@ -698,6 +908,10 @@ async function fetchGeneratedQuestionRows({
     questionQuery = questionQuery.gte("marks", 3);
   }
 
+  if (typeof limit === "number") {
+    questionQuery = questionQuery.limit(limit);
+  }
+
   const { data, error } = await questionQuery;
 
   if (error) {
@@ -713,6 +927,7 @@ async function fetchGeneratedQuestionRows({
         questionFilterMode,
         selectedSubtopicIds,
         supabase,
+        limit,
       });
     }
 
@@ -809,6 +1024,12 @@ function isPracticeQuestionFilterMode(
     typeof value === "string" &&
     practiceQuestionFilterModes.includes(value as PracticeQuestionFilterMode)
   );
+}
+
+function isGenerateQuestionSelectionStrategy(
+  value: unknown,
+): value is GenerateQuestionSelectionStrategy {
+  return value === "fast-initial" || value === "weighted";
 }
 
 function isPracticeSessionLength(value: unknown): value is PracticeSessionLength {
