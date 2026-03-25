@@ -13,6 +13,14 @@ import Breadcrumbs from "@/components/breadcrumbs";
 import PracticeInputBar from "@/components/practice/practice-input-bar";
 import PracticeSessionPanel from "@/components/practice/practice-session-panel";
 import { formatRubricPointDisplayText } from "@/lib/marking/rubric-display";
+import { hasReachedPracticeCompletionThreshold } from "@/lib/practice-completion";
+import {
+  derivePracticeHints,
+  derivePracticeReviewState,
+  isStuckPracticeAnswer,
+  MAX_PRACTICE_HINT_LEVEL,
+  type PracticeHintLevel,
+} from "@/lib/practice-guidance";
 import type {
   ApiErrorResponse,
   GenerateQuestionSelectionStrategy,
@@ -46,7 +54,13 @@ type PracticeWorkspaceShellProps = {
   onOpenSidebar: () => void;
 };
 
-type ThreadStage = "question" | "feedback" | "improving" | "complete";
+type ThreadStage = "question" | "feedback" | "improving" | "complete" | "skipped";
+
+type AttemptRevealStage = "score" | "focused";
+
+type AttemptRevealStateMap = Partial<Record<string, AttemptRevealStage>>;
+type HintRevealStateMap = Partial<Record<string, number>>;
+type StuckPromptStateMap = Partial<Record<string, boolean>>;
 
 type PracticeAttempt = {
   attemptNumber: number;
@@ -80,6 +94,12 @@ type FetchGeneratedQuestionOptions = {
   suppressErrors?: boolean;
 };
 
+type PendingAnswerReview = {
+  threadId: string;
+  attemptNumber: number;
+  submittedAnswer: string;
+};
+
 const primaryButtonClass =
   "inline-flex min-h-11 items-center justify-center rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 dark:bg-sky-600 dark:hover:bg-sky-500 dark:disabled:bg-slate-800 dark:disabled:text-slate-500";
 
@@ -88,6 +108,14 @@ const secondaryButtonClass =
 
 const DEFAULT_QUESTION_FILTER_MODE: PracticeQuestionFilterMode = "mixed";
 const DEFAULT_SESSION_LENGTH: PracticeSessionLength = 5;
+const MARKING_PROGRESS_MESSAGES = [
+  "Analyzing answer...",
+  "Checking key biological concepts...",
+  "Comparing to mark scheme...",
+  "Finalising score...",
+] as const;
+const MARKING_PROGRESS_INTERVAL_MS = 1200;
+const ATTEMPT_REVEAL_DELAY_MS = 300;
 
 export default function PracticeWorkspaceShell({
   subjectName,
@@ -114,6 +142,14 @@ export default function PracticeWorkspaceShell({
   const [answerError, setAnswerError] = useState<string | null>(null);
   const [isGeneratingQuestion, setIsGeneratingQuestion] = useState(false);
   const [isMarkingAnswer, setIsMarkingAnswer] = useState(false);
+  const [isSkippingQuestion, setIsSkippingQuestion] = useState(false);
+  const [pendingAnswerReview, setPendingAnswerReview] =
+    useState<PendingAnswerReview | null>(null);
+  const [attemptRevealState, setAttemptRevealState] =
+    useState<AttemptRevealStateMap>({});
+  const [hintRevealState, setHintRevealState] = useState<HintRevealStateMap>({});
+  const [stuckPromptState, setStuckPromptState] =
+    useState<StuckPromptStateMap>({});
   const [answerReviewStartedAt, setAnswerReviewStartedAt] = useState<number | null>(
     null,
   );
@@ -129,6 +165,7 @@ export default function PracticeWorkspaceShell({
   const prefetchedNextQuestionRequestRef =
     useRef<PrefetchedNextQuestionRequest | null>(null);
   const currentPrefetchSlotKeyRef = useRef("");
+  const attemptRevealTimeoutIdsRef = useRef<number[]>([]);
 
   const activeThread = getActiveThread(sessionThreads);
   const currentQuestion = activeThread?.question ?? null;
@@ -190,6 +227,9 @@ export default function PracticeWorkspaceShell({
     answerReviewStartedAt === null
       ? null
       : `AI review timer: ${formatElapsedSeconds(answerReviewElapsedMs)} elapsed`;
+  const pendingReviewProgressMessage = pendingAnswerReview
+    ? getMarkingProgressMessage(answerReviewElapsedMs)
+    : null;
   const hasValidPrefetchedNextQuestion = isPrefetchedQuestionSlotValid(
     prefetchedNextQuestion,
     prefetchSlotKey,
@@ -211,6 +251,64 @@ export default function PracticeWorkspaceShell({
     currentPrefetchSlotKeyRef.current = "";
     clearPrefetchedNextQuestionSlot();
     prefetchedNextQuestionRequestRef.current = null;
+  }
+
+  function clearAttemptRevealTimeouts() {
+    attemptRevealTimeoutIdsRef.current.forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    attemptRevealTimeoutIdsRef.current = [];
+  }
+
+  function registerAttemptRevealTimeout(callback: () => void, delay: number) {
+    const timeoutId = window.setTimeout(() => {
+      attemptRevealTimeoutIdsRef.current =
+        attemptRevealTimeoutIdsRef.current.filter(
+          (currentTimeoutId) => currentTimeoutId !== timeoutId,
+        );
+      callback();
+    }, delay);
+
+    attemptRevealTimeoutIdsRef.current = [
+      ...attemptRevealTimeoutIdsRef.current,
+      timeoutId,
+    ];
+  }
+
+  function beginAttemptReveal(threadId: string, attemptNumber: number) {
+    const attemptRevealKey = getAttemptRevealKey(threadId, attemptNumber);
+
+    setAttemptRevealState((current) => ({
+      ...current,
+      [attemptRevealKey]: "score",
+    }));
+
+    registerAttemptRevealTimeout(() => {
+      setAttemptRevealState((current) => {
+        if (current[attemptRevealKey] !== "score") {
+          return current;
+        }
+
+        return {
+          ...current,
+          [attemptRevealKey]: "focused",
+        };
+      });
+    }, ATTEMPT_REVEAL_DELAY_MS);
+  }
+
+  function revealNextHint(threadId: string) {
+    setHintRevealState((current) => ({
+      ...current,
+      [threadId]: Math.min(
+        MAX_PRACTICE_HINT_LEVEL,
+        (current[threadId] ?? 0) + 1,
+      ),
+    }));
+    setStuckPromptState((current) => ({
+      ...current,
+      [threadId]: false,
+    }));
   }
 
   function consumePrefetchedNextQuestionIfValid() {
@@ -252,13 +350,71 @@ export default function PracticeWorkspaceShell({
   }, [answerReviewStartedAt]);
 
   useEffect(() => {
+    return () => {
+      attemptRevealTimeoutIdsRef.current.forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+      attemptRevealTimeoutIdsRef.current = [];
+    };
+  }, []);
+
+  const scrollMainContentToTop = useCallback(() => {
+    const scrollContainer = centerScrollContainerRef.current;
+
+    if (scrollContainer) {
+      scrollContainer.scrollTop = 0;
+    }
+  }, []);
+
+  const resetSessionState = useCallback(({
+    resetControls = false,
+    scrollToTop = false,
+  }: {
+    resetControls?: boolean;
+    scrollToTop?: boolean;
+  } = {}) => {
+    sessionRequestTokenRef.current += 1;
+    setSessionThreads([]);
+    currentPrefetchSlotKeyRef.current = "";
+    prefetchedNextQuestionRef.current = null;
+    setPrefetchedNextQuestion(null);
+    prefetchedNextQuestionRequestRef.current = null;
+    setAnswerDraft("");
+    setQuestionCursor(0);
+    setCompletedQuestionCount(0);
+    setGenerationError(null);
+    setAnswerError(null);
+    setIsGeneratingQuestion(false);
+    setIsMarkingAnswer(false);
+    setIsSkippingQuestion(false);
+    setPendingAnswerReview(null);
+    setAttemptRevealState({});
+    setHintRevealState({});
+    setStuckPromptState({});
+    clearAttemptRevealTimeouts();
+    setAnswerReviewStartedAt(null);
+    setAnswerReviewElapsedMs(0);
+    setIsDesktopSessionPanelCollapsed(false);
+    setComposerFocusSequence(0);
+
+    if (resetControls) {
+      setQuestionFilterMode(DEFAULT_QUESTION_FILTER_MODE);
+      setSessionLength(DEFAULT_SESSION_LENGTH);
+    }
+
+    if (scrollToTop) {
+      scrollMainContentToTop();
+    }
+  }, [scrollMainContentToTop]);
+
+  useEffect(() => {
     if (previousSelectionKeyRef.current === selectionKey) {
       return;
     }
 
     previousSelectionKeyRef.current = selectionKey;
     resetSessionState({ resetControls: true, scrollToTop: true });
-  }, [selectionKey]);
+  }, [resetSessionState, selectionKey]);
 
   useEffect(() => {
     if (
@@ -394,46 +550,6 @@ export default function PracticeWorkspaceShell({
     sessionQuestionIds,
   ]);
 
-  function scrollMainContentToTop() {
-    const scrollContainer = centerScrollContainerRef.current;
-
-    if (scrollContainer) {
-      scrollContainer.scrollTop = 0;
-    }
-  }
-
-  function resetSessionState({
-    resetControls = false,
-    scrollToTop = false,
-  }: {
-    resetControls?: boolean;
-    scrollToTop?: boolean;
-  } = {}) {
-    sessionRequestTokenRef.current += 1;
-    setSessionThreads([]);
-    invalidatePrefetchedQuestionState();
-    setAnswerDraft("");
-    setQuestionCursor(0);
-    setCompletedQuestionCount(0);
-    setGenerationError(null);
-    setAnswerError(null);
-    setIsGeneratingQuestion(false);
-    setIsMarkingAnswer(false);
-    setAnswerReviewStartedAt(null);
-    setAnswerReviewElapsedMs(0);
-    setIsDesktopSessionPanelCollapsed(false);
-    setComposerFocusSequence(0);
-
-    if (resetControls) {
-      setQuestionFilterMode(DEFAULT_QUESTION_FILTER_MODE);
-      setSessionLength(DEFAULT_SESSION_LENGTH);
-    }
-
-    if (scrollToTop) {
-      scrollMainContentToTop();
-    }
-  }
-
   function resetSession() {
     resetSessionState({ scrollToTop: true });
   }
@@ -455,6 +571,13 @@ export default function PracticeWorkspaceShell({
     if (answerError) {
       setAnswerError(null);
     }
+
+    if (activeThread && !isStuckPracticeAnswer(nextValue)) {
+      setStuckPromptState((current) => ({
+        ...current,
+        [activeThread.threadId]: false,
+      }));
+    }
   }
 
   function appendGeneratedThread(question: GenerateQuestionResponse) {
@@ -471,6 +594,63 @@ export default function PracticeWorkspaceShell({
     setAnswerError(null);
     setIsDesktopSessionPanelCollapsed(true);
     setComposerFocusSequence((current) => current + 1);
+  }
+
+  async function advanceToNextQuestion({
+    requestToken,
+    nextCompletedQuestionCount,
+  }: {
+    requestToken: number;
+    nextCompletedQuestionCount: number;
+  }) {
+    if (nextCompletedQuestionCount >= sessionLength) {
+      invalidatePrefetchedQuestionState();
+      return;
+    }
+
+    const prefetchedQuestion = consumePrefetchedNextQuestionIfValid();
+
+    if (prefetchedQuestion) {
+      appendGeneratedThread(prefetchedQuestion);
+      return;
+    }
+
+    setIsGeneratingQuestion(true);
+
+    try {
+      const currentPrefetchRequest = prefetchedNextQuestionRequestRef.current;
+
+      if (currentPrefetchRequest?.contextKey === prefetchRequestContextKey) {
+        await currentPrefetchRequest.promise;
+      }
+
+      const awaitedPrefetchedQuestion = consumePrefetchedNextQuestionIfValid();
+
+      if (awaitedPrefetchedQuestion) {
+        appendGeneratedThread(awaitedPrefetchedQuestion);
+        return;
+      }
+
+      const nextQuestion = await fetchGeneratedQuestion({
+        excludeQuestionIds: sessionQuestionIds,
+        requestToken,
+        selectionStrategy: "weighted",
+      });
+
+      if (!nextQuestion || requestToken !== sessionRequestTokenRef.current) {
+        return;
+      }
+
+      appendGeneratedThread(nextQuestion);
+    } catch {
+      if (requestToken === sessionRequestTokenRef.current) {
+        setGenerationError("Could not generate a question right now.");
+      }
+    } finally {
+      if (requestToken === sessionRequestTokenRef.current) {
+        setIsGeneratingQuestion(false);
+      }
+    }
   }
 
   async function handleGenerateQuestion() {
@@ -530,7 +710,7 @@ export default function PracticeWorkspaceShell({
   }
 
   async function handleSubmitAnswer() {
-    if (!activeThread || isMarkingAnswer) {
+    if (!activeThread || isMarkingAnswer || isSkippingQuestion) {
       return;
     }
 
@@ -538,6 +718,14 @@ export default function PracticeWorkspaceShell({
 
     if (!trimmedAnswer) {
       setAnswerError("Answer text is required.");
+
+      if (activeThread) {
+        setStuckPromptState((current) => ({
+          ...current,
+          [activeThread.threadId]: true,
+        }));
+      }
+
       return;
     }
 
@@ -547,6 +735,12 @@ export default function PracticeWorkspaceShell({
     setAnswerError(null);
     setGenerationError(null);
     setIsMarkingAnswer(true);
+    setAnswerReviewElapsedMs(0);
+    setPendingAnswerReview({
+      threadId: activeThread.threadId,
+      attemptNumber: nextAttemptNumber,
+      submittedAnswer: trimmedAnswer,
+    });
     setAnswerReviewStartedAt(Date.now());
 
     try {
@@ -567,6 +761,7 @@ export default function PracticeWorkspaceShell({
         return;
       }
 
+      setPendingAnswerReview(null);
       setAnswerReviewStartedAt(null);
 
       if (!response.ok) {
@@ -588,7 +783,15 @@ export default function PracticeWorkspaceShell({
         isFeedbackCollapsed: false,
       };
 
-      const completed = hasReachedCompletionThreshold(body);
+      const completed = hasReachedPracticeCompletionThreshold(
+        body.score,
+        body.maxScore,
+      );
+      beginAttemptReveal(activeThread.threadId, nextAttemptNumber);
+      setStuckPromptState((current) => ({
+        ...current,
+        [activeThread.threadId]: isStuckPracticeAnswer(trimmedAnswer),
+      }));
 
       setSessionThreads((current) =>
         updateActiveThread(current, (thread) => ({
@@ -606,8 +809,6 @@ export default function PracticeWorkspaceShell({
       );
 
       if (!completed) {
-        setAnswerDraft(trimmedAnswer);
-        setComposerFocusSequence((current) => current + 1);
         return;
       }
 
@@ -615,64 +816,78 @@ export default function PracticeWorkspaceShell({
 
       const nextCompletedQuestionCount = completedQuestionCount + 1;
       setCompletedQuestionCount(nextCompletedQuestionCount);
-
-      if (nextCompletedQuestionCount >= sessionLength) {
-        invalidatePrefetchedQuestionState();
-        return;
-      }
-
-      const prefetchedQuestion = consumePrefetchedNextQuestionIfValid();
-
-      if (prefetchedQuestion) {
-        appendGeneratedThread(prefetchedQuestion);
-        return;
-      }
-
-      setIsGeneratingQuestion(true);
-
-      try {
-        const currentPrefetchRequest = prefetchedNextQuestionRequestRef.current;
-
-        if (currentPrefetchRequest?.contextKey === prefetchRequestContextKey) {
-          await currentPrefetchRequest.promise;
-        }
-
-        const awaitedPrefetchedQuestion = consumePrefetchedNextQuestionIfValid();
-
-        if (awaitedPrefetchedQuestion) {
-          appendGeneratedThread(awaitedPrefetchedQuestion);
-          return;
-        }
-
-        const nextQuestion = await fetchGeneratedQuestion({
-          excludeQuestionIds: sessionQuestionIds,
-          requestToken,
-          selectionStrategy: "weighted",
-        });
-
-        if (!nextQuestion || requestToken !== sessionRequestTokenRef.current) {
-          return;
-        }
-
-        appendGeneratedThread(nextQuestion);
-      } catch {
-        if (requestToken === sessionRequestTokenRef.current) {
-          setGenerationError("Could not generate a question right now.");
-        }
-      } finally {
-        if (requestToken === sessionRequestTokenRef.current) {
-          setIsGeneratingQuestion(false);
-        }
-      }
+      await advanceToNextQuestion({
+        requestToken,
+        nextCompletedQuestionCount,
+      });
     } catch {
       if (requestToken === sessionRequestTokenRef.current) {
+        setPendingAnswerReview(null);
         setAnswerReviewStartedAt(null);
         setAnswerError("Could not review this answer right now.");
       }
     } finally {
       if (requestToken === sessionRequestTokenRef.current) {
         setIsMarkingAnswer(false);
+        setPendingAnswerReview(null);
         setAnswerReviewStartedAt(null);
+      }
+    }
+  }
+
+  async function handleSkipQuestion() {
+    if (!activeThread || isMarkingAnswer || isSkippingQuestion) {
+      return;
+    }
+
+    const requestToken = sessionRequestTokenRef.current;
+
+    setAnswerError(null);
+    setGenerationError(null);
+    setIsSkippingQuestion(true);
+
+    try {
+      const response = await fetch("/api/skip-question", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          generatedQuestionId: Number(activeThread.question.questionId),
+        }),
+      });
+      const body = await readResponseBody(response);
+
+      if (requestToken !== sessionRequestTokenRef.current) {
+        return;
+      }
+
+      if (!response.ok) {
+        setAnswerError(
+          getApiErrorMessage(body, "Could not skip this question right now."),
+        );
+        return;
+      }
+
+      setSessionThreads((current) =>
+        updateActiveThread(current, (thread) => ({
+          ...thread,
+          stage: "skipped",
+          isCollapsed: true,
+        })),
+      );
+      setAnswerDraft("");
+      await advanceToNextQuestion({
+        requestToken,
+        nextCompletedQuestionCount: completedQuestionCount,
+      });
+    } catch {
+      if (requestToken === sessionRequestTokenRef.current) {
+        setAnswerError("Could not skip this question right now.");
+      }
+    } finally {
+      if (requestToken === sessionRequestTokenRef.current) {
+        setIsSkippingQuestion(false);
       }
     }
   }
@@ -700,10 +915,11 @@ export default function PracticeWorkspaceShell({
     );
   }
 
-  function toggleCompletedThread(threadId: string) {
+  function toggleArchivedThread(threadId: string) {
     setSessionThreads((current) =>
       current.map((thread) =>
-        thread.threadId === threadId && thread.stage === "complete"
+        thread.threadId === threadId &&
+        (thread.stage === "complete" || thread.stage === "skipped")
           ? { ...thread, isCollapsed: !thread.isCollapsed }
           : thread,
       ),
@@ -789,8 +1005,9 @@ export default function PracticeWorkspaceShell({
               ) : (
                 <div className="space-y-6 pb-4 sm:space-y-7 sm:pb-6">
                   {sessionThreads.map((thread, index) =>
-                    thread.stage === "complete" ? (
-                      <CompletedPracticeThread
+                    thread.stage === "complete" || thread.stage === "skipped" ? (
+                      <ArchivedPracticeThread
+                        attemptRevealState={attemptRevealState}
                         key={thread.threadId}
                         onToggleAttemptFeedbackCollapse={(attemptNumber) =>
                           toggleAttemptFeedbackCollapse(
@@ -798,7 +1015,7 @@ export default function PracticeWorkspaceShell({
                             attemptNumber,
                           )
                         }
-                        onToggleCollapse={() => toggleCompletedThread(thread.threadId)}
+                        onToggleCollapse={() => toggleArchivedThread(thread.threadId)}
                         thread={thread}
                         threadNumber={index + 1}
                       />
@@ -806,11 +1023,16 @@ export default function PracticeWorkspaceShell({
                       <ActivePracticeThread
                         answerDraft={answerDraft}
                         answerError={answerError}
+                        attemptRevealState={attemptRevealState}
                         answerReviewTimerLabel={answerReviewTimerLabel}
                         composerFocusTrigger={composerFocusSequence}
+                        hintRevealCount={hintRevealState[thread.threadId] ?? 0}
                         isMarkingAnswer={isMarkingAnswer}
+                        isSkippingQuestion={isSkippingQuestion}
                         key={thread.threadId}
                         onAnswerDraftChange={handleAnswerDraftChange}
+                        onRevealNextHint={() => revealNextHint(thread.threadId)}
+                        onSkipQuestion={handleSkipQuestion}
                         onSubmitAnswer={handleSubmitAnswer}
                         onToggleAttemptFeedbackCollapse={(attemptNumber) =>
                           toggleAttemptFeedbackCollapse(
@@ -818,8 +1040,11 @@ export default function PracticeWorkspaceShell({
                             attemptNumber,
                           )
                         }
+                        pendingAnswerReview={pendingAnswerReview}
+                        shouldOfferHint={stuckPromptState[thread.threadId] ?? false}
                         thread={thread}
                         threadNumber={index + 1}
+                        pendingReviewProgressMessage={pendingReviewProgressMessage}
                       />
                     ),
                   )}
@@ -1056,12 +1281,20 @@ type ActivePracticeThreadProps = {
   threadNumber: number;
   answerDraft: string;
   answerError: string | null;
+  attemptRevealState: AttemptRevealStateMap;
   answerReviewTimerLabel: string | null;
   composerFocusTrigger: number;
+  hintRevealCount: number;
   isMarkingAnswer: boolean;
+  isSkippingQuestion: boolean;
   onAnswerDraftChange: (value: string) => void;
+  onRevealNextHint: () => void;
+  onSkipQuestion: () => void;
   onSubmitAnswer: () => void;
   onToggleAttemptFeedbackCollapse: (attemptNumber: number) => void;
+  pendingAnswerReview: PendingAnswerReview | null;
+  pendingReviewProgressMessage: string | null;
+  shouldOfferHint: boolean;
 };
 
 function ActivePracticeThread({
@@ -1069,12 +1302,20 @@ function ActivePracticeThread({
   threadNumber,
   answerDraft,
   answerError,
+  attemptRevealState,
   answerReviewTimerLabel,
   composerFocusTrigger,
+  hintRevealCount,
   isMarkingAnswer,
+  isSkippingQuestion,
   onAnswerDraftChange,
+  onRevealNextHint,
+  onSkipQuestion,
   onSubmitAnswer,
   onToggleAttemptFeedbackCollapse,
+  pendingAnswerReview,
+  pendingReviewProgressMessage,
+  shouldOfferHint,
 }: ActivePracticeThreadProps) {
   const composerRegionRef = useRef<HTMLDivElement>(null);
   const latestAttempt = getLatestAttempt(thread);
@@ -1090,6 +1331,41 @@ function ActivePracticeThread({
     : thread.attempts.length > 0
       ? `Submit attempt ${nextAttemptNumber}`
       : "Submit answer";
+  const practiceHints = useMemo(
+    () =>
+      derivePracticeHints({
+        questionText: thread.question.questionText,
+        answerFocus: thread.question.answerFocus,
+        rubricPoints: thread.question.rubricPoints,
+        modelAnswer: thread.question.modelAnswer,
+        maxScore: thread.question.marks,
+      }),
+    [thread.question],
+  );
+  const revealedHints = practiceHints.slice(
+    0,
+    Math.min(hintRevealCount, MAX_PRACTICE_HINT_LEVEL),
+  );
+  const latestReviewState = useMemo(
+    () =>
+      latestAttempt
+        ? derivePracticeReviewState({
+            rubricAssessment: latestAttempt.feedback.rubricAssessment,
+            score: latestAttempt.feedback.score,
+            maxScore: latestAttempt.feedback.maxScore,
+          })
+        : null,
+    [latestAttempt],
+  );
+  const hintButtonLabel =
+    hintRevealCount >= MAX_PRACTICE_HINT_LEVEL
+      ? "All hints revealed"
+      : hintRevealCount === 0
+        ? "Need a hint?"
+        : "Show next hint";
+  const skipActionLabel = isSkippingQuestion ? "Skipping..." : "Skip question";
+  const activePendingAnswerReview =
+    pendingAnswerReview?.threadId === thread.threadId ? pendingAnswerReview : null;
 
   useEffect(() => {
     if (!shouldShowComposer || composerFocusTrigger === 0) {
@@ -1130,12 +1406,23 @@ function ActivePracticeThread({
               onToggleFeedbackCollapse={() =>
                 onToggleAttemptFeedbackCollapse(attempt.attemptNumber)
               }
+              revealStage={getAttemptRevealStage(
+                attemptRevealState,
+                thread.threadId,
+                attempt.attemptNumber,
+              )}
             />
           ))}
         </div>
-      ) : (
-        <ThreadStartState />
-      )}
+      ) : null}
+
+      {activePendingAnswerReview && pendingReviewProgressMessage ? (
+        <PendingReviewTurn
+          attemptNumber={activePendingAnswerReview.attemptNumber}
+          progressMessage={pendingReviewProgressMessage}
+          submittedAnswer={activePendingAnswerReview.submittedAnswer}
+        />
+      ) : null}
 
       {shouldShowComposer ? (
         <div
@@ -1148,14 +1435,38 @@ function ActivePracticeThread({
             </div>
           ) : null}
 
+          {latestReviewState &&
+          (latestReviewState.revealedMissing.length > 0 ||
+            latestReviewState.nextDraftTarget) ? (
+            <RewriteAidCard
+              items={latestReviewState.revealedMissing}
+              nextDraftTarget={latestReviewState.nextDraftTarget}
+            />
+          ) : null}
+
+          <PracticeHintPanel
+            hintButtonLabel={hintButtonLabel}
+            hints={revealedHints}
+            isDisabled={hintRevealCount >= MAX_PRACTICE_HINT_LEVEL}
+            onRevealNextHint={onRevealNextHint}
+            shouldOfferHint={
+              shouldOfferHint && hintRevealCount < MAX_PRACTICE_HINT_LEVEL
+            }
+          />
+
           <PracticeInputBar
             footerNote={answerReviewTimerLabel}
             focusTrigger={composerFocusTrigger}
             isRewriteEmphasized={shouldShowComposer}
+            onSecondaryAction={onSkipQuestion}
             onSubmit={onSubmitAnswer}
             onValueChange={onAnswerDraftChange}
-            readOnly={isMarkingAnswer}
-            submitDisabled={isMarkingAnswer || answerDraft.trim().length === 0}
+            secondaryActionAriaLabel={skipActionLabel}
+            secondaryActionDisabled={isMarkingAnswer || isSkippingQuestion}
+            secondaryActionLabel={skipActionLabel}
+            submitDisabled={
+              isMarkingAnswer || isSkippingQuestion || answerDraft.trim().length === 0
+            }
             submitAriaLabel={submitAriaLabel}
             value={answerDraft}
           />
@@ -1165,25 +1476,32 @@ function ActivePracticeThread({
   );
 }
 
-type CompletedPracticeThreadProps = {
+type ArchivedPracticeThreadProps = {
   thread: SessionThread;
   threadNumber: number;
+  attemptRevealState: AttemptRevealStateMap;
   onToggleCollapse: () => void;
   onToggleAttemptFeedbackCollapse: (attemptNumber: number) => void;
 };
 
-function CompletedPracticeThread({
+function ArchivedPracticeThread({
   thread,
   threadNumber,
+  attemptRevealState,
   onToggleCollapse,
   onToggleAttemptFeedbackCollapse,
-}: CompletedPracticeThreadProps) {
+}: ArchivedPracticeThreadProps) {
   const firstAttempt = thread.attempts[0] ?? null;
   const finalAttempt = thread.attempts[thread.attempts.length - 1] ?? null;
+  const isCompletedThread = thread.stage === "complete";
   const improvementLabel =
     firstAttempt && finalAttempt
       ? getImprovementLabel(firstAttempt, finalAttempt)
-      : "Improvement: not available";
+      : null;
+  const statusLabel = isCompletedThread ? "Completed" : "Skipped";
+  const statusClassName = isCompletedThread
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200"
+    : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200";
 
   return (
     <article className="rounded-[24px] border border-slate-200/80 bg-white/80 px-4 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/65 sm:px-5">
@@ -1199,8 +1517,10 @@ function CompletedPracticeThread({
               <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
                 Question {threadNumber}
               </span>
-              <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">
-                Completed
+              <span
+                className={`inline-flex rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${statusClassName}`}
+              >
+                {statusLabel}
               </span>
               <span className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
                 {getCommandWordLabel(thread.question.questionType)}
@@ -1231,14 +1551,16 @@ function CompletedPracticeThread({
       <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-slate-200/80 pt-4 text-sm leading-6 text-slate-600 dark:border-slate-800/80 dark:text-slate-300">
         {finalAttempt ? (
           <span>
-            Final score:{" "}
+            {isCompletedThread ? "Final score:" : "Latest score:"}{" "}
             <span className="font-semibold text-slate-950 dark:text-white">
               {finalAttempt.feedback.score}/{finalAttempt.feedback.maxScore}
             </span>
           </span>
+        ) : thread.stage === "skipped" ? (
+          <span>Skipped before submitting an answer.</span>
         ) : null}
         <span>Attempts: {thread.attempts.length}</span>
-        <span>{improvementLabel}</span>
+        {improvementLabel ? <span>{improvementLabel}</span> : null}
       </div>
 
       <div
@@ -1270,6 +1592,11 @@ function CompletedPracticeThread({
                   onToggleFeedbackCollapse={() =>
                     onToggleAttemptFeedbackCollapse(attempt.attemptNumber)
                   }
+                  revealStage={getAttemptRevealStage(
+                    attemptRevealState,
+                    thread.threadId,
+                    attempt.attemptNumber,
+                  )}
                 />
               ))}
             </div>
@@ -1335,22 +1662,12 @@ function QuestionThreadHeader({
   );
 }
 
-function ThreadStartState() {
-  return (
-    <section className="flex justify-center py-3">
-      <div className="max-w-xl text-center text-sm leading-7 text-slate-500 dark:text-slate-400">
-        Your first answer will appear here as the opening turn in this question
-        thread.
-      </div>
-    </section>
-  );
-}
-
 type ThreadTurnProps = {
   attempt: PracticeAttempt;
   isGuidancePrimary?: boolean;
   modelAnswer: string | null;
   onToggleFeedbackCollapse: () => void;
+  revealStage?: AttemptRevealStage;
 };
 
 type RubricAssessmentItem = MarkAnswerResponse["rubricAssessment"][number];
@@ -1360,17 +1677,19 @@ function ThreadTurn({
   isGuidancePrimary = false,
   modelAnswer,
   onToggleFeedbackCollapse,
+  revealStage = "focused",
 }: ThreadTurnProps) {
   const [isModelAnswerVisible, setIsModelAnswerVisible] = useState(false);
+  const [isFullReviewVisible, setIsFullReviewVisible] = useState(false);
   const feedbackPanelId = useId();
-  const correctItems = attempt.feedback.rubricAssessment.filter(
-    (item) => item.status === "present",
-  );
-  const missingItems = attempt.feedback.rubricAssessment.filter(
-    (item) => item.status === "absent",
-  );
-  const partialItems = attempt.feedback.rubricAssessment.filter(
-    (item) => item.status === "partial",
+  const reviewState = useMemo(
+    () =>
+      derivePracticeReviewState({
+        rubricAssessment: attempt.feedback.rubricAssessment,
+        score: attempt.feedback.score,
+        maxScore: attempt.feedback.maxScore,
+      }),
+    [attempt.feedback],
   );
   const hasModelAnswer =
     typeof modelAnswer === "string" && modelAnswer.trim().length > 0;
@@ -1378,6 +1697,16 @@ function ThreadTurn({
   const feedbackToggleLabel = attempt.isFeedbackCollapsed
     ? "Show AI review"
     : "Hide AI review";
+  const isFocusedFeedbackVisible = revealStage === "focused";
+  const hasSupplementaryReview =
+    reviewState.present.length > 0 ||
+    reviewState.partial.length > 0 ||
+    reviewState.absent.length > reviewState.revealedMissing.length ||
+    offTopicPoints.length > 0 ||
+    hasModelAnswer;
+  const fullReviewToggleLabel = isFullReviewVisible
+    ? "Hide full review"
+    : "Show full review";
 
   return (
     <div className="space-y-3.5">
@@ -1444,47 +1773,315 @@ function ThreadTurn({
                   feedback={attempt.feedback}
                   isEmphasized={isGuidancePrimary}
                 />
-                <NextDraftTargetSection
-                  isEmphasized={isGuidancePrimary}
-                  nextStep={attempt.feedback.feedback.nextStep}
-                />
-                <div className={isGuidancePrimary ? "space-y-5 opacity-90" : "space-y-5"}>
-                  <RubricAssessmentSection
-                    emptyMessage="No mark points matched."
-                    items={correctItems}
-                    status="present"
-                    title="Correct"
-                  />
-                  <RubricAssessmentSection
-                    emptyMessage="No missing rubric points."
-                    items={missingItems}
-                    status="absent"
-                    title="Missing"
-                  />
-                  {partialItems.length > 0 ? (
+                {isFocusedFeedbackVisible ? (
+                  <>
                     <RubricAssessmentSection
-                      items={partialItems}
-                      status="partial"
-                      title="Partial"
+                      emptyMessage={
+                        reviewState.absent.length === 0
+                          ? "No priority missing points right now."
+                          : "No priority missing points revealed right now."
+                      }
+                      items={reviewState.revealedMissing}
+                      status="absent"
+                      title="Priority missing points"
                     />
-                  ) : null}
-                </div>
-                {offTopicPoints.length > 0 ? (
-                  <OffTopicContentSection offTopicPoints={offTopicPoints} />
-                ) : null}
-                {hasModelAnswer ? (
-                  <ModelAnswerSection
-                    isVisible={isModelAnswerVisible}
-                    modelAnswer={modelAnswer}
-                    onToggle={() => setIsModelAnswerVisible((current) => !current)}
-                  />
-                ) : null}
+                    <NextDraftTargetSection
+                      isEmphasized={isGuidancePrimary}
+                      nextStep={reviewState.nextDraftTarget}
+                    />
+                    {hasSupplementaryReview ? (
+                      <div className="flex">
+                        <button
+                          aria-expanded={isFullReviewVisible}
+                          className="inline-flex min-h-9 items-center justify-center rounded-xl border border-slate-200 bg-white/80 px-3.5 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
+                          onClick={() =>
+                            setIsFullReviewVisible((current) => !current)
+                          }
+                          type="button"
+                        >
+                          {fullReviewToggleLabel}
+                        </button>
+                      </div>
+                    ) : null}
+                    {isFullReviewVisible ? (
+                      <div
+                        className={`rounded-[24px] border border-slate-200/80 bg-white/85 px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80 ${
+                          isGuidancePrimary ? "space-y-5 opacity-90" : "space-y-5"
+                        }`}
+                      >
+                        <RubricAssessmentSection
+                          emptyMessage="No mark points matched."
+                          items={reviewState.present}
+                          status="present"
+                          title="Correct"
+                        />
+                        {reviewState.partial.length > 0 ? (
+                          <RubricAssessmentSection
+                            items={reviewState.partial}
+                            status="partial"
+                            title="Partial"
+                          />
+                        ) : null}
+                        <RubricAssessmentSection
+                          emptyMessage="No missing rubric points."
+                          items={reviewState.absent}
+                          status="absent"
+                          title="All missing points"
+                        />
+                        {offTopicPoints.length > 0 ? (
+                          <OffTopicContentSection offTopicPoints={offTopicPoints} />
+                        ) : null}
+                        {hasModelAnswer ? (
+                          <ModelAnswerSection
+                            isVisible={isModelAnswerVisible}
+                            modelAnswer={modelAnswer}
+                            onToggle={() =>
+                              setIsModelAnswerVisible((current) => !current)
+                            }
+                          />
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <ReviewRevealPlaceholder
+                      description="Preparing priority missing points..."
+                      isEmphasized={isGuidancePrimary}
+                      minHeightClass="min-h-[108px]"
+                      title="Priority missing points"
+                    />
+                    <ReviewRevealPlaceholder
+                      description="Preparing next draft target..."
+                      isEmphasized={isGuidancePrimary}
+                      minHeightClass="min-h-[96px]"
+                      title="Next draft target"
+                    />
+                  </>
+                )}
               </div>
             </div>
           </div>
         </div>
       </ThreadBlock>
     </div>
+  );
+}
+
+function PendingReviewTurn({
+  attemptNumber,
+  progressMessage,
+  submittedAnswer,
+}: {
+  attemptNumber: number;
+  progressMessage: string;
+  submittedAnswer: string;
+}) {
+  return (
+    <div className="space-y-3.5">
+      <ThreadBlock
+        align="right"
+        caption={`Your answer - Attempt ${attemptNumber}`}
+        tone="answer"
+      >
+        <p className="whitespace-pre-wrap text-sm leading-7 text-inherit">
+          {submittedAnswer}
+        </p>
+      </ThreadBlock>
+
+      <ThreadBlock
+        align="left"
+        caption={`AI review - Attempt ${attemptNumber}`}
+        headerTrailing={
+          <span className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+            <span
+              aria-hidden="true"
+              className="h-2 w-2 rounded-full bg-sky-500 animate-pulse"
+            />
+            In progress
+          </span>
+        }
+        tone="feedback"
+      >
+        <div aria-atomic="true" aria-live="polite" className="space-y-5">
+          <section className="review-shimmer rounded-[22px] border border-sky-200 bg-white/90 px-4 py-4 shadow-sm dark:border-sky-500/30 dark:bg-slate-900/85">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700 dark:text-sky-200">
+              AI review in progress
+            </p>
+            <p className="mt-3 text-xl font-semibold tracking-tight text-slate-950 dark:text-white">
+              {progressMessage}
+            </p>
+            <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">
+              Your score will appear first, followed by priority missing points
+              and the next draft target.
+            </p>
+          </section>
+          <ReviewRevealPlaceholder
+            description="Checking priority missing points..."
+            minHeightClass="min-h-[108px]"
+            title="Priority missing points"
+          />
+          <ReviewRevealPlaceholder
+            description="Preparing next draft target..."
+            minHeightClass="min-h-[96px]"
+            title="Next draft target"
+          />
+        </div>
+      </ThreadBlock>
+    </div>
+  );
+}
+
+function ReviewRevealPlaceholder({
+  title,
+  description,
+  minHeightClass = "min-h-[96px]",
+  isEmphasized = false,
+}: {
+  title: string;
+  description: string;
+  minHeightClass?: string;
+  isEmphasized?: boolean;
+}) {
+  return (
+    <section
+      className={`review-shimmer rounded-[22px] border px-4 py-4 ${minHeightClass} ${
+        isEmphasized
+          ? "border-sky-200 bg-sky-50/80 dark:border-sky-500/30 dark:bg-sky-500/12"
+          : "border-slate-200 bg-white/85 dark:border-slate-800 dark:bg-slate-900/80"
+      }`}
+    >
+      <p
+        className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${
+          isEmphasized
+            ? "text-sky-700 dark:text-sky-200"
+            : "text-slate-500 dark:text-slate-400"
+        }`}
+      >
+        {title}
+      </p>
+      <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
+        {description}
+      </p>
+    </section>
+  );
+}
+
+function PracticeHintPanel({
+  hints,
+  hintButtonLabel,
+  isDisabled,
+  onRevealNextHint,
+  shouldOfferHint,
+}: {
+  hints: PracticeHintLevel[];
+  hintButtonLabel: string;
+  isDisabled: boolean;
+  onRevealNextHint: () => void;
+  shouldOfferHint: boolean;
+}) {
+  return (
+    <section className="space-y-3 rounded-[22px] border border-slate-200/80 bg-slate-50/70 px-4 py-4 dark:border-slate-800 dark:bg-slate-950/60">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-1">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+            Zero-token hints
+          </p>
+          <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
+            Deterministic nudges built from the question, answer focus, and
+            ordered rubric points.
+          </p>
+        </div>
+
+        <button
+          className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-sky-300 hover:text-sky-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:hover:border-sky-500 dark:hover:text-sky-200 dark:disabled:border-slate-800 dark:disabled:bg-slate-900 dark:disabled:text-slate-600"
+          disabled={isDisabled}
+          onClick={onRevealNextHint}
+          type="button"
+        >
+          {hintButtonLabel}
+        </button>
+      </div>
+
+      {shouldOfferHint ? (
+        <div className="rounded-[18px] border border-amber-300 bg-amber-50 px-3.5 py-3 text-sm leading-6 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+          Looks like you&apos;re stuck. Want a hint?
+        </div>
+      ) : null}
+
+      {hints.length > 0 ? (
+        <div className="space-y-3">
+          {hints.map((hint) => (
+            <HintCard hint={hint} key={hint.level} />
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function HintCard({ hint }: { hint: PracticeHintLevel }) {
+  return (
+    <section className="rounded-[18px] border border-slate-200 bg-white/90 px-4 py-3 shadow-sm dark:border-slate-800 dark:bg-slate-900/85">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700 dark:text-sky-200">
+        Hint {hint.level}: {hint.title}
+      </p>
+      {hint.lines.length > 1 ? (
+        <ul className="mt-3 space-y-2 text-sm leading-6 text-slate-700 dark:text-slate-300">
+          {hint.lines.map((line, index) => (
+            <li className="flex gap-2" key={`${hint.level}-${index}`}>
+              <span aria-hidden="true" className="text-sky-600 dark:text-sky-300">
+                -
+              </span>
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-3 text-sm leading-6 text-slate-700 dark:text-slate-300">
+          {hint.lines[0]}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function RewriteAidCard({
+  items,
+  nextDraftTarget,
+}: {
+  items: RubricAssessmentItem[];
+  nextDraftTarget: string | null;
+}) {
+  return (
+    <section className="sticky top-3 z-10 rounded-[22px] border border-sky-200 bg-sky-50/80 px-4 py-4 shadow-sm dark:border-sky-500/30 dark:bg-sky-500/12">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700 dark:text-sky-200">
+        Rewrite aid
+      </p>
+      <p className="mt-2 text-sm leading-6 text-slate-700 dark:text-slate-200">
+        Keep these priority gaps in view while you rewrite.
+      </p>
+
+      {items.length > 0 ? (
+        <div className="mt-3 space-y-2">
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">
+            Include these next
+          </p>
+          <CompactMissingList items={items} />
+        </div>
+      ) : null}
+
+      {nextDraftTarget ? (
+        <div className="mt-3 space-y-2">
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">
+            Next draft target
+          </p>
+          <div className="rounded-[18px] border border-sky-200 bg-white/80 px-3.5 py-3 text-sm leading-6 text-slate-800 dark:border-sky-500/30 dark:bg-slate-900/70 dark:text-slate-100">
+            {nextDraftTarget}
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -1660,7 +2257,7 @@ function NextDraftTargetSection({
   nextStep,
   isEmphasized = false,
 }: {
-  nextStep: string;
+  nextStep: string | null;
   isEmphasized?: boolean;
 }) {
   return (
@@ -1681,7 +2278,7 @@ function NextDraftTargetSection({
             : "border-sky-200 bg-sky-50/80 text-sky-950 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-100"
         }`}
       >
-        {nextStep}
+        {nextStep ?? "No priority rewrite target right now."}
       </div>
     </section>
   );
@@ -1744,12 +2341,7 @@ function ModelAnswerSection({
         <div className="rounded-[22px] border border-slate-200 bg-white/85 px-4 py-4 text-sm leading-7 text-slate-700 dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-200">
           <p className="whitespace-pre-wrap">{modelAnswer}</p>
         </div>
-      ) : (
-        <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
-          Reveal the stored model answer to compare structure and coverage after
-          reviewing the feedback.
-        </p>
-      )}
+      ) : null}
     </section>
   );
 }
@@ -1970,10 +2562,33 @@ function MobileSessionDrawer({
   );
 }
 
+function getAttemptRevealKey(threadId: string, attemptNumber: number) {
+  return `${threadId}:${attemptNumber}`;
+}
+
+function getAttemptRevealStage(
+  attemptRevealState: AttemptRevealStateMap,
+  threadId: string,
+  attemptNumber: number,
+) {
+  return (
+    attemptRevealState[getAttemptRevealKey(threadId, attemptNumber)] ?? "focused"
+  );
+}
+
+function getMarkingProgressMessage(elapsedMilliseconds: number) {
+  const progressMessageIndex = Math.min(
+    Math.floor(elapsedMilliseconds / MARKING_PROGRESS_INTERVAL_MS),
+    MARKING_PROGRESS_MESSAGES.length - 1,
+  );
+
+  return MARKING_PROGRESS_MESSAGES[progressMessageIndex]!;
+}
+
 function getActiveThread(threads: SessionThread[]) {
   const lastThread = threads[threads.length - 1] ?? null;
 
-  if (!lastThread || lastThread.stage === "complete") {
+  if (!lastThread || lastThread.stage === "complete" || lastThread.stage === "skipped") {
     return null;
   }
 
@@ -2012,7 +2627,11 @@ function updateActiveThread(
   const nextThreads = [...threads];
   const lastIndex = nextThreads.length - 1;
 
-  if (lastIndex < 0 || nextThreads[lastIndex].stage === "complete") {
+  if (
+    lastIndex < 0 ||
+    nextThreads[lastIndex].stage === "complete" ||
+    nextThreads[lastIndex].stage === "skipped"
+  ) {
     return threads;
   }
 
@@ -2056,14 +2675,6 @@ function getLatestAttempt(thread: SessionThread) {
 
 function getNextAttemptNumber(thread: SessionThread) {
   return (getLatestAttempt(thread)?.attemptNumber ?? 0) + 1;
-}
-
-function getCompletionThreshold(maxScore: number) {
-  return maxScore <= 3 ? maxScore : maxScore - 1;
-}
-
-function hasReachedCompletionThreshold(feedback: MarkAnswerResponse) {
-  return feedback.score >= getCompletionThreshold(feedback.maxScore);
 }
 
 async function readResponseBody(response: Response) {

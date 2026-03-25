@@ -1,5 +1,6 @@
-import type { PracticeRubricPoint } from "@/lib/mock-biology-practice-api";
-import { createClient } from "@/utils/supabase/server";
+import type { PracticeRubricPoint } from "./mock-biology-practice-api.ts";
+import type { createClient } from "../utils/supabase/server.ts";
+import { isMissingColumnError } from "./supabase-errors.ts";
 
 export type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -326,13 +327,6 @@ function normalizeGeneratedQuestionRecord(
     ...row,
     model_answer: row.model_answer ?? null,
   };
-}
-
-function isMissingColumnError(caughtError: unknown, columnName: string) {
-  return (
-    caughtError instanceof Error &&
-    caughtError.message.toLowerCase().includes(columnName.toLowerCase())
-  );
 }
 
 function isPositiveInteger(value: unknown): value is number {

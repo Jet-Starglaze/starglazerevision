@@ -1,4 +1,9 @@
 import type { MarkAnswerResponse } from "@/lib/mock-biology-practice-api";
+import {
+  createAllAbsentPointsModeResponse,
+  isAnswerTooShortToMark,
+  sanitizePointsModeResponse,
+} from "@/lib/marking/evidence";
 import { finalizePointsModeResponse } from "@/lib/marking/feedback";
 import { buildPointsMarkingPrompt } from "@/lib/marking/prompts";
 import { requestMarkingModelOutput } from "@/lib/marking/openrouter";
@@ -24,17 +29,33 @@ const SHOULD_LOG_MATCHING_WARNINGS = process.env.NODE_ENV === "development";
 export async function markAnswer(
   input: PreparedMarkingInput,
 ): Promise<MarkingApiResult<MarkAnswerResponse>> {
+  const baseDiagnostics = createBaseDiagnostics(input);
+
+  if (isAnswerTooShortToMark(input.answerText)) {
+    const scoringResult = measureSync(() =>
+      scorePointsModeResponse(createAllAbsentPointsModeResponse(input), input),
+    );
+
+    return {
+      ...scoringResult.result,
+      meta: {
+        ...baseDiagnostics,
+        scoringMs: scoringResult.ms,
+      },
+    };
+  }
+
   const promptBuildResult = measureSync(() => buildPointsMarkingPrompt(input));
   const prompt = promptBuildResult.result;
-  const baseDiagnostics: MarkingDiagnostics = {
+  const promptDiagnostics: MarkingDiagnostics = {
     modelName: null,
     modelMaxTokens: null,
     completionTokensUsed: null,
     finishReason: null,
-    questionTextChars: input.questionText.length,
-    answerTextChars: input.answerText.length,
+    questionTextChars: baseDiagnostics.questionTextChars,
+    answerTextChars: baseDiagnostics.answerTextChars,
     promptChars: prompt.systemPrompt.length + prompt.userPrompt.length,
-    rubricPointCount: input.rubricPoints.length,
+    rubricPointCount: baseDiagnostics.rubricPointCount,
     promptBuildMs: promptBuildResult.ms,
     modelMs: null,
     parseMs: null,
@@ -47,12 +68,12 @@ export async function markAnswer(
   if (isApiFailure(modelOutput)) {
     return {
       ...modelOutput,
-      meta: baseDiagnostics,
+      meta: promptDiagnostics,
     };
   }
 
   const diagnostics: MarkingDiagnostics = {
-    ...baseDiagnostics,
+    ...promptDiagnostics,
     modelName: modelOutput.modelName,
     modelMaxTokens: modelOutput.maxCompletionTokens,
     completionTokensUsed: modelOutput.completionTokensUsed,
@@ -128,8 +149,11 @@ function validateAndScorePointsModeResponse(
   const validationResult = measureSync(() =>
     validatePointsModeResponse(parsedOutput, input),
   );
+  const sanitizationResult = measureSync(() =>
+    sanitizePointsModeResponse(validationResult.result, input),
+  );
   const finalizedResponse = finalizePointsModeResponse(
-    validationResult.result,
+    sanitizationResult.result,
     input,
   );
   maybeWarnAboutDuplicateEvidence(finalizedResponse, input);
@@ -139,7 +163,9 @@ function validateAndScorePointsModeResponse(
 
   return {
     result: scoringResult.result,
-    outputValidationMs: validationResult.ms,
+    outputValidationMs: roundTimingMs(
+      validationResult.ms + sanitizationResult.ms,
+    ),
     scoringMs: scoringResult.ms,
   };
 }
@@ -165,6 +191,25 @@ function scorePointsModeResponse(
 }
 
 export type { PreparedMarkingInput } from "@/lib/marking/types";
+
+function createBaseDiagnostics(input: PreparedMarkingInput): MarkingDiagnostics {
+  return {
+    modelName: null,
+    modelMaxTokens: null,
+    completionTokensUsed: null,
+    finishReason: null,
+    questionTextChars: input.questionText.length,
+    answerTextChars: input.answerText.length,
+    promptChars: 0,
+    rubricPointCount: input.rubricPoints.length,
+    promptBuildMs: null,
+    modelMs: null,
+    parseMs: null,
+    outputValidationMs: null,
+    scoringMs: null,
+    rawOutputChars: null,
+  };
+}
 
 function maybeWarnAboutDuplicateEvidence(
   validatedResponse: PointsModeModelResponse,

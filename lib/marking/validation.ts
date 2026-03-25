@@ -85,21 +85,6 @@ function normalizeRubricAssessmentItem(
     `rubricAssessment[${index}].evidence`,
   );
 
-  if (status === "absent" && evidence.length > 0) {
-    throw new Error("Absent rubric points must not include evidence");
-  }
-
-  if (status !== "absent" && evidence.length === 0) {
-    throw new Error("Present or partial rubric points must include evidence");
-  }
-
-  if (
-    status === "partial" &&
-    evidence.trim().toLowerCase() === expectedPointText.trim().toLowerCase()
-  ) {
-    throw new Error("Partial rubric points must not restate the full rubric point verbatim");
-  }
-
   return {
     pointText,
     status,
@@ -142,6 +127,10 @@ function normalizeRequiredString(value: unknown, fieldName: string) {
 }
 
 function normalizeOptionalString(value: unknown, fieldName: string) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+
   if (typeof value !== "string") {
     throw new Error(`${fieldName} must be a string`);
   }

@@ -2,7 +2,7 @@ import type {
   PracticeQuestionCommandWord,
   PracticeQuestionFilterMode,
   PracticeSessionLength,
-} from "@/lib/mock-biology-practice";
+} from "./mock-biology-practice.ts";
 
 export type ApiErrorResponse = {
   error: string;

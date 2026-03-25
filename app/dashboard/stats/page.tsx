@@ -4,10 +4,11 @@ import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import {
   fetchPracticeStats,
-  type PracticeStatsFocusNext,
   type PracticeStatsRecentAttemptRow,
   type PracticeStatsRequiredAreaRow,
+  type PracticeStatsSkippedQuestionRow,
   type PracticeStatsSubtopicRow,
+  type PracticeStatsSummary,
 } from "@/lib/practice-stats";
 import { createClient } from "@/utils/supabase/server";
 
@@ -15,14 +16,16 @@ export const metadata: Metadata = {
   title: "Practice Statistics",
 };
 
-const sectionClassName =
-  "rounded-3xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-950 sm:p-8";
+const PRACTICE_HREF = "/subjects/ocr-a-level-biology-a/practice";
 
-const panelClassName =
-  "rounded-2xl border border-slate-200 bg-slate-50 p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900";
+const primaryButtonClass =
+  "inline-flex min-h-11 items-center justify-center rounded-2xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-800 dark:bg-sky-600 dark:hover:bg-sky-500";
 
-const secondaryButtonClass =
-  "inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:hover:border-sky-500 dark:hover:text-sky-200";
+const disclosureClassName =
+  "group rounded-3xl border border-slate-200/70 bg-white/75 px-5 py-4 shadow-sm shadow-slate-950/5 backdrop-blur-sm transition dark:border-slate-800/80 dark:bg-slate-950/70 dark:shadow-black/20 sm:px-6";
+
+const tableContainerClassName =
+  "overflow-x-auto rounded-3xl border border-slate-200/80 bg-white/90 shadow-sm shadow-slate-950/5 dark:border-slate-800/80 dark:bg-slate-950/90 dark:shadow-black/20";
 
 const dateTimeFormatter = new Intl.DateTimeFormat("en-GB", {
   dateStyle: "medium",
@@ -51,107 +54,443 @@ export default async function DashboardStatsPage() {
   }
 
   const stats = await fetchPracticeStats(supabase, user.id);
+  const weakestSubtopic = stats.focusNext.weakestSubtopic;
+  const weakestRequiredArea = stats.focusNext.weakestRequiredArea;
+  const mostRecentlyPractisedSubtopic =
+    stats.focusNext.mostRecentlyPractisedSubtopic;
+  const latestAttempt = stats.recentAttempts[0] ?? null;
+  const weakAreaRows = stats.subtopicProgress.slice(0, 5);
 
   return (
-    <main className="min-h-screen bg-slate-100 px-4 py-8 dark:bg-slate-950 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-6xl space-y-6">
-        <section className={sectionClassName}>
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-3xl space-y-4">
-              <p className="text-sm font-semibold uppercase tracking-[0.28em] text-sky-700 dark:text-sky-200">
-                Practice statistics
-              </p>
-              <div className="space-y-3">
-                <h1 className="text-3xl font-semibold tracking-tight text-slate-950 dark:text-white sm:text-4xl">
-                  Verify progress and mastery tracking
-                </h1>
-                <p className="max-w-2xl text-base leading-7 text-slate-600 dark:text-slate-300">
-                  Review the current per-user practice data in one place so we
-                  can confirm attempts, completion, subtopic progress, and
-                  required-area mastery are updating as expected.
-                </p>
-              </div>
-              <p className="text-sm text-slate-500 dark:text-slate-400">
-                Signed in as{" "}
-                <span className="font-medium text-slate-700 dark:text-slate-200">
-                  {user.email ?? "Unknown email"}
-                </span>
-              </p>
-            </div>
+    <main className="px-4 py-8 sm:px-6 lg:px-8 xl:px-10 2xl:px-12">
+      <div className="mx-auto w-full max-w-[1500px] space-y-8">
+        <SummaryStrip
+          summary={stats.summary}
+          weakestSubtopic={weakestSubtopic}
+        />
 
-            <div className="flex flex-col gap-3 sm:flex-row">
-              <Link
-                className={secondaryButtonClass}
-                href="/dashboard"
-                prefetch={false}
-              >
-                Back to dashboard
-              </Link>
-            </div>
-          </div>
+        <WeakestAreaCallout weakestSubtopic={weakestSubtopic} />
 
-          <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-            <SummaryCard
-              label="Questions attempted"
-              value={String(stats.summary.questionsAttempted)}
-            />
-            <SummaryCard
-              label="Questions completed"
-              value={String(stats.summary.questionsCompleted)}
-            />
-            <SummaryCard
-              label="Average score ratio"
-              value={formatRatio(stats.summary.averageScoreRatio)}
-            />
-            <SummaryCard
-              label="Average attempts per question"
-              value={formatDecimal(stats.summary.averageAttemptsPerQuestion)}
-            />
-            <SummaryCard
-              label="Average attempts to completion"
-              value={formatNullableDecimal(
-                stats.summary.averageAttemptsToCompletion,
-              )}
-            />
-          </div>
-        </section>
-
-        <StatsSection
-          title="Subtopic progress"
-          description="Check whether user-level subtopic rollups are populating and whether weaker areas surface clearly."
-        >
-          <SubtopicProgressTable rows={stats.subtopicProgress} />
-        </StatsSection>
-
-        <StatsSection
-          title="Concept strengths and gaps"
-          description="See which focus areas need more revision, which ones are becoming secure, and where to focus next."
-        >
-          <RequiredAreaInsights
-            latestSubtopic={stats.focusNext.mostRecentlyPractisedSubtopic}
-            rows={stats.requiredAreaProgress}
+        <div className="grid gap-8 xl:grid-cols-[0.82fr_minmax(0,1.18fr)_0.95fr]">
+          <LeftSupportColumn
+            latestSubtopic={mostRecentlyPractisedSubtopic}
+            summary={stats.summary}
           />
-        </StatsSection>
+          <WeakAreasList rows={weakAreaRows} />
+          <RightContextColumn
+            latestAttempt={latestAttempt}
+            weakestRequiredArea={weakestRequiredArea}
+          />
+        </div>
 
-        <StatsSection
-          title="Recent attempts"
-          description="Inspect the latest answer attempts and confirm the generated question history is recording correctly."
-        >
-          <RecentAttemptsTable rows={stats.recentAttempts} />
-        </StatsSection>
+        <div className="space-y-3">
+          <DisclosureSection
+            description="Secondary metrics and focus-area detail."
+            title="Detailed breakdown"
+          >
+            <DetailedBreakdown
+              latestSubtopic={mostRecentlyPractisedSubtopic}
+              rows={stats.requiredAreaProgress}
+              summary={stats.summary}
+              weakestRequiredArea={weakestRequiredArea}
+            />
+          </DisclosureSection>
 
-        <StatsSection
-          title="Focus next"
-          description="Use the current data to identify the weakest area, the weakest focus area, and the latest subtopic worked on."
-        >
-          <FocusNextGrid focusNext={stats.focusNext} />
-        </StatsSection>
+          <DisclosureSection
+            description="Every subtopic, sorted weakest first."
+            title="Subtopic progress"
+          >
+            <SubtopicProgressTable rows={stats.subtopicProgress} />
+          </DisclosureSection>
+
+          <DisclosureSection
+            description="Latest marked answers and scores."
+            title="Recent attempts"
+          >
+            <RecentAttemptsTable rows={stats.recentAttempts} />
+          </DisclosureSection>
+
+          <DisclosureSection
+            description="Questions you skipped most recently."
+            title="Recently skipped"
+          >
+            <RecentSkippedQuestionsTable rows={stats.recentSkippedQuestions} />
+          </DisclosureSection>
+        </div>
       </div>
     </main>
   );
 }
 
-function StatsSection({
+function SummaryStrip({
+  summary,
+  weakestSubtopic,
+}: {
+  summary: PracticeStatsSummary;
+  weakestSubtopic: PracticeStatsSubtopicRow | null;
+}) {
+  return (
+    <section className="border-b border-slate-200/80 pb-5 dark:border-slate-800/80">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+        <div className="space-y-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500 dark:text-slate-400">
+            At a glance
+          </p>
+
+          <div className="grid gap-4 sm:grid-cols-4">
+            <SummaryInlineItem
+              label="Questions completed"
+              value={String(summary.questionsCompleted)}
+            />
+            <SummaryInlineItem
+              label="Questions skipped"
+              value={String(summary.questionsSkipped)}
+            />
+            <SummaryInlineItem
+              label="Average score"
+              value={formatRatio(summary.averageScoreRatio)}
+            />
+            <SummaryInlineItem
+              label="Weakest area"
+              value={weakestSubtopic?.subtopicName ?? "No weak area yet"}
+              supporting={
+                weakestSubtopic
+                  ? `${formatRatio(weakestSubtopic.averageScoreRatio)} average score`
+                  : "Complete a few marked answers to surface your next focus."
+              }
+            />
+          </div>
+        </div>
+
+        <Link
+          className="inline-flex items-center gap-2 self-start rounded-full px-1 py-2 text-sm font-medium text-slate-600 transition hover:text-sky-700 dark:text-slate-300 dark:hover:text-sky-200"
+          href="/dashboard"
+          prefetch={false}
+        >
+          Back to dashboard
+        </Link>
+      </div>
+    </section>
+  );
+}
+
+function SummaryInlineItem({
+  label,
+  value,
+  supporting,
+}: {
+  label: string;
+  value: string;
+  supporting?: string;
+}) {
+  return (
+    <div className="min-w-0 space-y-1.5">
+      <p className="text-[0.7rem] font-semibold uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">
+        {label}
+      </p>
+      <p className="truncate text-xl font-semibold tracking-tight text-slate-950 dark:text-white sm:text-2xl">
+        {value}
+      </p>
+      {supporting ? (
+        <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
+          {supporting}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function WeakestAreaCallout({
+  weakestSubtopic,
+}: {
+  weakestSubtopic: PracticeStatsSubtopicRow | null;
+}) {
+  const ctaLabel = weakestSubtopic
+    ? `Continue training -> ${weakestSubtopic.subtopicName}`
+    : "Practice this now";
+
+  return (
+    <section className="overflow-hidden rounded-[2rem] border border-slate-200/70 bg-white/80 shadow-sm shadow-slate-950/5 backdrop-blur-sm dark:border-slate-800/80 dark:bg-slate-950/75 dark:shadow-black/20">
+      <div className="bg-[radial-gradient(circle_at_top_left,_rgba(14,165,233,0.12),_transparent_48%)] px-6 py-6 sm:px-8">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+          <div className="max-w-3xl space-y-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-sky-700 dark:text-sky-200">
+              Focus next
+            </p>
+
+            <div className="space-y-2">
+              <h1 className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white sm:text-3xl">
+                {weakestSubtopic?.subtopicName ?? "Build a clearer picture of your weakest area"}
+              </h1>
+              <p className="max-w-2xl text-sm leading-7 text-slate-600 dark:text-slate-300 sm:text-base">
+                {weakestSubtopic
+                  ? `${formatRatio(weakestSubtopic.averageScoreRatio)} average score and ${weakestSubtopic.masteryBand ?? "early"} mastery. This is the clearest place to spend your next revision block.`
+                  : "A little more marked practice will surface your weakest subtopic and give you a sharper recommendation here."}
+              </p>
+            </div>
+
+            {weakestSubtopic ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {weakestSubtopic.subtopicCode ? (
+                  <span className="inline-flex rounded-full border border-slate-200/80 bg-white/75 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-600 dark:border-slate-700/80 dark:bg-slate-900/70 dark:text-slate-300">
+                    {weakestSubtopic.subtopicCode}
+                  </span>
+                ) : null}
+                <MasteryBandPill masteryBand={weakestSubtopic.masteryBand} />
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex w-full max-w-md flex-col gap-3">
+            <Link
+              className={`${primaryButtonClass} justify-between rounded-2xl px-5 text-left`}
+              href={PRACTICE_HREF}
+              prefetch={false}
+            >
+              <span className="truncate">{ctaLabel}</span>
+              <span aria-hidden="true">{"->"}</span>
+            </Link>
+            <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
+              Open the practice workspace and keep your next revision block
+              focused on the weakest current area.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LeftSupportColumn({
+  summary,
+  latestSubtopic,
+}: {
+  summary: PracticeStatsSummary;
+  latestSubtopic: PracticeStatsSubtopicRow | null;
+}) {
+  return (
+    <section className="space-y-5">
+      <div className="space-y-2">
+        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">
+          Supporting context
+        </p>
+        <h2 className="text-lg font-semibold tracking-tight text-slate-950 dark:text-white">
+          Keep the detail light
+        </h2>
+      </div>
+
+      <div className="space-y-4 rounded-[1.75rem] border border-slate-200/70 bg-white/65 p-5 shadow-sm shadow-slate-950/5 backdrop-blur-sm dark:border-slate-800/80 dark:bg-slate-950/60 dark:shadow-black/20">
+        <CompactSupportStat
+          label="Questions attempted"
+          value={String(summary.questionsAttempted)}
+        />
+        <CompactSupportStat
+          label="Questions skipped"
+          value={String(summary.questionsSkipped)}
+        />
+        <CompactSupportStat
+          label="Average attempts per question"
+          value={formatDecimal(summary.averageAttemptsPerQuestion)}
+        />
+        <CompactSupportStat
+          label="Attempts to completion"
+          value={formatNullableDecimal(summary.averageAttemptsToCompletion)}
+        />
+      </div>
+
+      <div className="space-y-2 rounded-[1.75rem] border border-slate-200/70 bg-white/55 p-5 dark:border-slate-800/80 dark:bg-slate-950/55">
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">
+          Most recently practised
+        </p>
+        <p className="text-base font-semibold tracking-tight text-slate-950 dark:text-white">
+          {latestSubtopic?.subtopicName ?? "No recent practice yet"}
+        </p>
+        <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
+          {latestSubtopic
+            ? formatDateTime(latestSubtopic.lastPractisedAt)
+            : "Your latest subtopic activity will appear here after your first marked answer."}
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function CompactSupportStat({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 border-b border-slate-200/70 pb-3 last:border-b-0 last:pb-0 dark:border-slate-800/70">
+      <p className="text-sm text-slate-600 dark:text-slate-300">{label}</p>
+      <p className="text-lg font-semibold tracking-tight text-slate-950 dark:text-white">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function WeakAreasList({ rows }: { rows: PracticeStatsSubtopicRow[] }) {
+  return (
+    <section className="space-y-4">
+      <div className="space-y-2">
+        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-700 dark:text-sky-200">
+          Train these next
+        </p>
+        <h2 className="text-xl font-semibold tracking-tight text-slate-950 dark:text-white">
+          Your weakest subtopics
+        </h2>
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState message="No weak areas yet. Complete a few marked answers and this list will start surfacing what to train next." />
+      ) : (
+        <div className="space-y-3">
+          {rows.map((row, index) => (
+            <Link
+              className="group flex items-center justify-between gap-4 rounded-[1.6rem] border border-slate-200/70 bg-white/85 px-4 py-4 shadow-sm shadow-slate-950/5 transition hover:-translate-y-0.5 hover:border-sky-300 hover:shadow-md hover:shadow-sky-950/10 dark:border-slate-800/80 dark:bg-slate-950/78 dark:shadow-black/20 dark:hover:border-sky-500/60"
+              href={PRACTICE_HREF}
+              key={row.subtopicId}
+              prefetch={false}
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="truncate text-base font-semibold tracking-tight text-slate-950 dark:text-white">
+                    {row.subtopicName}
+                  </p>
+                  {row.subtopicCode ? (
+                    <span className="rounded-full border border-slate-200/80 bg-white/75 px-2.5 py-0.5 text-[0.68rem] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:border-slate-700/80 dark:bg-slate-900/70 dark:text-slate-400">
+                      {row.subtopicCode}
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+                  <span>{formatRatio(row.averageScoreRatio)} score</span>
+                  <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">
+                    /
+                  </span>
+                  <MasteryBandPill masteryBand={row.masteryBand} />
+                  {index === 0 ? (
+                    <span className="rounded-full bg-sky-100 px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-sky-700 dark:bg-sky-500/10 dark:text-sky-200">
+                      Start here
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="shrink-0 text-right">
+                <span className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-white/75 px-3 py-1.5 text-sm font-semibold text-slate-800 transition group-hover:border-sky-300 group-hover:text-sky-700 dark:border-slate-700/80 dark:bg-slate-900/70 dark:text-slate-100 dark:group-hover:border-sky-500 dark:group-hover:text-sky-200">
+                  Practice
+                  <span aria-hidden="true">{"->"}</span>
+                </span>
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
+
+      <Link
+        className="inline-flex items-center gap-2 text-sm font-semibold text-sky-700 transition hover:text-sky-800 dark:text-sky-200 dark:hover:text-sky-100"
+        href={PRACTICE_HREF}
+        prefetch={false}
+      >
+        Continue training
+        {rows[0] ? ` -> ${rows[0].subtopicName}` : ""}
+      </Link>
+    </section>
+  );
+}
+
+function RightContextColumn({
+  latestAttempt,
+  weakestRequiredArea,
+}: {
+  latestAttempt: PracticeStatsRecentAttemptRow | null;
+  weakestRequiredArea: PracticeStatsRequiredAreaRow | null;
+}) {
+  return (
+    <section className="space-y-4">
+      <div className="space-y-2">
+        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">
+          Recent context
+        </p>
+        <h2 className="text-lg font-semibold tracking-tight text-slate-950 dark:text-white">
+          Stay oriented
+        </h2>
+      </div>
+
+      <ContextCard
+        description={
+          latestAttempt
+            ? `Attempt ${latestAttempt.attemptNumber} on ${formatDateTime(latestAttempt.createdAt)}`
+            : "Your latest score and topic will appear here after the next marked answer."
+        }
+        eyebrow="Latest attempt"
+        title={
+          latestAttempt
+            ? `${latestAttempt.score} / ${latestAttempt.maxScore}`
+            : "No attempts yet"
+        }
+      >
+        <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+          {latestAttempt?.subtopicName ?? "Start practice to populate this section"}
+        </p>
+      </ContextCard>
+
+      <ContextCard
+        description={
+          weakestRequiredArea
+            ? `${weakestRequiredArea.subtopicName} / ${formatRatio(
+                weakestRequiredArea.masteryRatio,
+              )} mastery`
+            : "This updates as focus-area mastery data becomes available."
+        }
+        eyebrow="Weakest focus area"
+        title={
+          weakestRequiredArea?.requiredAreaLabel ?? "No focus-area data yet"
+        }
+      >
+        {weakestRequiredArea ? (
+          <MasteryBandPill masteryBand={weakestRequiredArea.masteryBand} />
+        ) : null}
+      </ContextCard>
+    </section>
+  );
+}
+
+function ContextCard({
+  eyebrow,
+  title,
+  description,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <article className="space-y-3 rounded-[1.75rem] border border-slate-200/70 bg-white/78 p-5 shadow-sm shadow-slate-950/5 dark:border-slate-800/80 dark:bg-slate-950/74 dark:shadow-black/20">
+      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">
+        {eyebrow}
+      </p>
+      <div className="space-y-2">
+        <h3 className="text-lg font-semibold tracking-tight text-slate-950 dark:text-white">
+          {title}
+        </h3>
+        <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
+          {description}
+        </p>
+      </div>
+      {children ? <div>{children}</div> : null}
+    </article>
+  );
+}
+
+function DisclosureSection({
   title,
   description,
   children,
@@ -161,28 +500,128 @@ function StatsSection({
   children: ReactNode;
 }) {
   return (
-    <section className={sectionClassName}>
-      <div className="space-y-2">
-        <h2 className="text-xl font-semibold tracking-tight text-slate-950 dark:text-white">
-          {title}
-        </h2>
-        <p className="max-w-3xl text-sm leading-7 text-slate-600 dark:text-slate-300">
-          {description}
-        </p>
-      </div>
+    <details className={disclosureClassName}>
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 marker:hidden">
+        <div className="space-y-1">
+          <h2 className="text-base font-semibold tracking-tight text-slate-950 dark:text-white">
+            {title}
+          </h2>
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            {description}
+          </p>
+        </div>
+        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-200/80 bg-white/80 text-slate-500 transition group-open:rotate-45 dark:border-slate-700/80 dark:bg-slate-900/80 dark:text-slate-300">
+          +
+        </span>
+      </summary>
 
-      <div className="mt-5">{children}</div>
-    </section>
+      <div className="mt-5 border-t border-slate-200/70 pt-5 dark:border-slate-800/70">
+        {children}
+      </div>
+    </details>
   );
 }
 
-function SummaryCard({ label, value }: { label: string; value: string }) {
+function DetailedBreakdown({
+  summary,
+  rows,
+  weakestRequiredArea,
+  latestSubtopic,
+}: {
+  summary: PracticeStatsSummary;
+  rows: PracticeStatsRequiredAreaRow[];
+  weakestRequiredArea: PracticeStatsRequiredAreaRow | null;
+  latestSubtopic: PracticeStatsSubtopicRow | null;
+}) {
   return (
-    <article className={panelClassName}>
-      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">
+    <div className="space-y-6">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <LightMetricCard
+          label="Questions attempted"
+          value={String(summary.questionsAttempted)}
+        />
+        <LightMetricCard
+          label="Questions completed"
+          value={String(summary.questionsCompleted)}
+        />
+        <LightMetricCard
+          label="Questions skipped"
+          value={String(summary.questionsSkipped)}
+        />
+        <LightMetricCard
+          label="Average attempts per question"
+          value={formatDecimal(summary.averageAttemptsPerQuestion)}
+        />
+        <LightMetricCard
+          label="Average attempts to completion"
+          value={formatNullableDecimal(summary.averageAttemptsToCompletion)}
+        />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <ContextCard
+          description={
+            weakestRequiredArea
+              ? `${weakestRequiredArea.subtopicName} / ${weakestRequiredArea.timesTested} tested`
+              : "Mark answers with focus-area data to unlock this recommendation."
+          }
+          eyebrow="Weakest focus area overall"
+          title={
+            weakestRequiredArea?.requiredAreaLabel ?? "No focus-area data yet"
+          }
+        >
+          {weakestRequiredArea ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <MasteryBandPill masteryBand={weakestRequiredArea.masteryBand} />
+              <span className="text-sm text-slate-600 dark:text-slate-300">
+                {formatResultsSummary(weakestRequiredArea)}
+              </span>
+            </div>
+          ) : null}
+        </ContextCard>
+
+        <ContextCard
+          description={
+            latestSubtopic
+              ? formatDateTime(latestSubtopic.lastPractisedAt)
+              : "Your most recent subtopic practice will appear here after the next marked answer."
+          }
+          eyebrow="Latest subtopic session"
+          title={latestSubtopic?.subtopicName ?? "No recent session yet"}
+        >
+          {latestSubtopic ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <MasteryBandPill masteryBand={latestSubtopic.masteryBand} />
+              <span className="text-sm text-slate-600 dark:text-slate-300">
+                {formatRatio(latestSubtopic.averageScoreRatio)} average score
+              </span>
+            </div>
+          ) : null}
+        </ContextCard>
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState message="No focus-area progress has been recorded yet. Mark answers with rubric-linked required areas to populate this section." />
+      ) : (
+        <RequiredAreaBreakdownTable rows={rows} />
+      )}
+    </div>
+  );
+}
+
+function LightMetricCard({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <article className="rounded-[1.5rem] border border-slate-200/70 bg-white/80 px-4 py-4 dark:border-slate-800/80 dark:bg-slate-950/75">
+      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">
         {label}
       </p>
-      <p className="mt-3 text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">
+      <p className="mt-2 text-xl font-semibold tracking-tight text-slate-950 dark:text-white">
         {value}
       </p>
     </article>
@@ -196,23 +635,21 @@ function SubtopicProgressTable({
 }) {
   if (rows.length === 0) {
     return (
-      <EmptyState
-        message="No subtopic progress has been recorded yet. Complete a few marked answers to populate this table."
-      />
+      <EmptyState message="No subtopic progress has been recorded yet. Complete a few marked answers to populate this table." />
     );
   }
 
   return (
-    <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
+    <div className={tableContainerClassName}>
       <table className="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
         <thead className="bg-slate-50/80 dark:bg-slate-900/80">
           <tr className="text-left text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
             <TableHead>Subtopic</TableHead>
             <TableHead>Questions seen</TableHead>
             <TableHead>Questions completed</TableHead>
-            <TableHead>Average score ratio</TableHead>
-            <TableHead>Average attempts per question</TableHead>
-            <TableHead>Mastery band</TableHead>
+            <TableHead>Average score</TableHead>
+            <TableHead>Average attempts</TableHead>
+            <TableHead>Mastery</TableHead>
             <TableHead>Last practised</TableHead>
           </tr>
         </thead>
@@ -243,200 +680,13 @@ function SubtopicProgressTable({
   );
 }
 
-function RequiredAreaInsights({
-  rows,
-  latestSubtopic,
-}: {
-  rows: PracticeStatsRequiredAreaRow[];
-  latestSubtopic: PracticeStatsSubtopicRow | null;
-}) {
-  if (rows.length === 0) {
-    return (
-      <EmptyState
-        message="No focus-area progress has been recorded yet. Mark answers with rubric-linked required areas to populate this section."
-      />
-    );
-  }
-
-  const weakestOverall = rows[0] ?? null;
-  const weakestInLatestSubtopic =
-    latestSubtopic === null
-      ? null
-      : rows.find((row) => row.subtopicId === latestSubtopic.subtopicId) ?? null;
-  const weakRows = sortFocusAreaRowsByBand(rows, "weak");
-  const developingRows = sortFocusAreaRowsByBand(rows, "developing");
-  const strongRows = sortFocusAreaRowsByBand(rows, "strong");
-
-  return (
-    <div className="space-y-6">
-      <div className="space-y-3">
-        <h3 className="text-lg font-semibold tracking-tight text-slate-950 dark:text-white">
-          What to revise next
-        </h3>
-        <div className="grid gap-4 xl:grid-cols-2">
-          <FocusCard
-            title="Weakest focus area overall"
-            primary={weakestOverall?.requiredAreaLabel ?? "No focus-area data yet"}
-            secondary={
-              weakestOverall
-                ? `${weakestOverall.subtopicName} / ${formatRatio(
-                    weakestOverall.masteryRatio,
-                  )} mastery ratio / ${weakestOverall.timesTested} tested`
-                : "Mark more answers to surface your weakest focus area."
-            }
-            badge={
-              weakestOverall ? (
-                <MasteryBandPill masteryBand={weakestOverall.masteryBand} />
-              ) : null
-            }
-          />
-          <FocusCard
-            title="Weakest focus area in your latest subtopic"
-            primary={
-              weakestInLatestSubtopic?.requiredAreaLabel ??
-              "No recent subtopic focus area yet"
-            }
-            secondary={
-              weakestInLatestSubtopic
-                ? `${weakestInLatestSubtopic.subtopicName} / ${formatRatio(
-                    weakestInLatestSubtopic.masteryRatio,
-                  )} mastery ratio / ${weakestInLatestSubtopic.timesTested} tested`
-                : latestSubtopic
-                  ? "Keep working in this subtopic to build focus-area detail."
-                  : "Complete a marked question to unlock this recommendation."
-            }
-            badge={
-              weakestInLatestSubtopic ? (
-                <MasteryBandPill
-                  masteryBand={weakestInLatestSubtopic.masteryBand}
-                />
-              ) : null
-            }
-          />
-        </div>
-      </div>
-
-      <FocusAreaGroup
-        emptyMessage="No weak focus areas yet. Keep practising to confirm what still needs work."
-        rows={weakRows}
-        title="Focus areas to improve"
-      />
-
-      {developingRows.length > 0 ? (
-        <FocusAreaGroup
-          emptyMessage="No developing focus areas yet."
-          rows={developingRows}
-          title="Developing areas"
-        />
-      ) : null}
-
-      <FocusAreaGroup
-        emptyMessage="No strong focus areas yet. Stronger areas will appear here as your revision becomes more secure."
-        rows={strongRows}
-        title="Strong areas"
-      />
-
-      <div className="space-y-3">
-        <div className="space-y-2">
-          <h3 className="text-lg font-semibold tracking-tight text-slate-950 dark:text-white">
-            Detailed focus area breakdown
-          </h3>
-          <p className="max-w-3xl text-sm leading-7 text-slate-600 dark:text-slate-300">
-            Use this smaller table to verify the underlying mastery data without
-            letting raw counters dominate the page.
-          </p>
-        </div>
-        <RequiredAreaBreakdownTable rows={rows} />
-      </div>
-    </div>
-  );
-}
-
-function FocusAreaGroup({
-  title,
-  rows,
-  emptyMessage,
-}: {
-  title: string;
-  rows: PracticeStatsRequiredAreaRow[];
-  emptyMessage: string;
-}) {
-  const displayedRows = rows.slice(0, 6);
-
-  if (displayedRows.length === 0) {
-    return (
-      <div className="space-y-3">
-        <h3 className="text-lg font-semibold tracking-tight text-slate-950 dark:text-white">
-          {title}
-        </h3>
-        <EmptyState message={emptyMessage} />
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="space-y-2">
-        <h3 className="text-lg font-semibold tracking-tight text-slate-950 dark:text-white">
-          {title}
-        </h3>
-        {rows.length > displayedRows.length ? (
-          <p className="text-sm leading-7 text-slate-600 dark:text-slate-300">
-            Showing {displayedRows.length} of {rows.length} focus areas. Use the
-            detailed breakdown below to inspect the full list.
-          </p>
-        ) : null}
-      </div>
-      <div className="grid gap-3 xl:grid-cols-2">
-        {displayedRows.map((row) => (
-          <article
-            className={panelClassName}
-            key={`${row.subtopicId}-${row.requiredArea}`}
-          >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="space-y-1">
-                <h4 className="text-base font-semibold tracking-tight text-slate-950 dark:text-white">
-                  {row.requiredAreaLabel}
-                </h4>
-                <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
-                  {row.subtopicName}
-                </p>
-              </div>
-              <MasteryBandPill masteryBand={row.masteryBand} />
-            </div>
-            <div className="mt-4 flex flex-wrap gap-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
-              <span>
-                Mastery:{" "}
-                <span className="font-semibold text-slate-900 dark:text-slate-100">
-                  {formatRatio(row.masteryRatio)}
-                </span>
-              </span>
-              <span>
-                Tested:{" "}
-                <span className="font-semibold text-slate-900 dark:text-slate-100">
-                  {String(row.timesTested)}
-                </span>
-              </span>
-            </div>
-            {row.lastPractisedAt ? (
-              <p className="mt-3 text-xs leading-6 text-slate-500 dark:text-slate-400">
-                Last practised {formatDateTime(row.lastPractisedAt)}
-              </p>
-            ) : null}
-          </article>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function RequiredAreaBreakdownTable({
   rows,
 }: {
   rows: PracticeStatsRequiredAreaRow[];
 }) {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
+    <div className={tableContainerClassName}>
       <table className="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
         <thead className="bg-slate-50/80 dark:bg-slate-900/80">
           <tr className="text-left text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
@@ -486,14 +736,12 @@ function RecentAttemptsTable({
 }) {
   if (rows.length === 0) {
     return (
-      <EmptyState
-        message="No answer attempts have been recorded yet. Submit an answer in the practice workspace to populate recent attempts."
-      />
+      <EmptyState message="No answer attempts have been recorded yet. Submit an answer in the practice workspace to populate recent attempts." />
     );
   }
 
   return (
-    <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
+    <div className={tableContainerClassName}>
       <table className="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
         <thead className="bg-slate-50/80 dark:bg-slate-900/80">
           <tr className="text-left text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
@@ -531,97 +779,55 @@ function RecentAttemptsTable({
   );
 }
 
-function FocusNextGrid({ focusNext }: { focusNext: PracticeStatsFocusNext }) {
-  return (
-    <div className="grid gap-4 xl:grid-cols-3">
-      <FocusCard
-        title="Weakest subtopic"
-        primary={
-          focusNext.weakestSubtopic?.subtopicName ?? "No subtopic data yet"
-        }
-        secondary={
-          focusNext.weakestSubtopic
-            ? `${formatRatio(focusNext.weakestSubtopic.averageScoreRatio)} average score ratio`
-            : "Complete and mark answers to generate subtopic progress."
-        }
-        badge={
-          focusNext.weakestSubtopic ? (
-            <MasteryBandPill masteryBand={focusNext.weakestSubtopic.masteryBand} />
-          ) : null
-        }
-      />
-      <FocusCard
-        title="Weakest focus area"
-        primary={
-          focusNext.weakestRequiredArea?.requiredAreaLabel ??
-          "No focus-area data yet"
-        }
-        secondary={
-          focusNext.weakestRequiredArea
-            ? `${focusNext.weakestRequiredArea.subtopicName} / ${formatRatio(
-                focusNext.weakestRequiredArea.masteryRatio,
-              )} mastery ratio`
-            : "Mark answers with required-area metadata to populate this recommendation."
-        }
-        badge={
-          focusNext.weakestRequiredArea ? (
-            <MasteryBandPill
-              masteryBand={focusNext.weakestRequiredArea.masteryBand}
-            />
-          ) : null
-        }
-      />
-      <FocusCard
-        title="Most recently practised subtopic"
-        primary={
-          focusNext.mostRecentlyPractisedSubtopic?.subtopicName ??
-          "No recent practice yet"
-        }
-        secondary={
-          focusNext.mostRecentlyPractisedSubtopic
-            ? formatDateTime(
-                focusNext.mostRecentlyPractisedSubtopic.lastPractisedAt,
-              )
-            : "Work through a question to see your latest activity here."
-        }
-        badge={null}
-      />
-    </div>
-  );
-}
-
-function FocusCard({
-  title,
-  primary,
-  secondary,
-  badge,
+function RecentSkippedQuestionsTable({
+  rows,
 }: {
-  title: string;
-  primary: string;
-  secondary: string;
-  badge: ReactNode;
+  rows: PracticeStatsSkippedQuestionRow[];
 }) {
+  if (rows.length === 0) {
+    return (
+      <EmptyState message="No skipped questions have been recorded yet. Use Skip question in the practice workspace to populate this section." />
+    );
+  }
+
   return (
-    <article className={`${panelClassName} flex h-full flex-col gap-4`}>
-      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-700 dark:text-sky-200">
-        {title}
-      </p>
-      <div className="space-y-2">
-        <h3 className="text-lg font-semibold tracking-tight text-slate-950 dark:text-white">
-          {primary}
-        </h3>
-        <p className="text-sm leading-7 text-slate-600 dark:text-slate-300">
-          {secondary}
-        </p>
-      </div>
-      {badge ? <div>{badge}</div> : null}
-    </article>
+    <div className={tableContainerClassName}>
+      <table className="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
+        <thead className="bg-slate-50/80 dark:bg-slate-900/80">
+          <tr className="text-left text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+            <TableHead>Question text</TableHead>
+            <TableHead>Subtopic</TableHead>
+            <TableHead>Attempts recorded</TableHead>
+            <TableHead>Skipped at</TableHead>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+          {rows.map((row) => (
+            <tr key={`${row.generatedQuestionId}-${row.skippedAt ?? "unknown"}`}>
+              <TableCell>
+                <span className="block max-w-[28rem] truncate font-medium text-slate-900 dark:text-slate-100">
+                  {row.questionText}
+                </span>
+              </TableCell>
+              <TableCell>
+                <SubtopicCell
+                  subtopicCode={row.subtopicCode}
+                  subtopicName={row.subtopicName}
+                />
+              </TableCell>
+              <TableCell>{String(row.attemptsTotal)}</TableCell>
+              <TableCell>{formatDateTime(row.skippedAt)}</TableCell>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 function EmptyState({ message }: { message: string }) {
   return (
-    <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-5 text-sm leading-7 text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+    <div className="rounded-[1.75rem] border border-dashed border-slate-300/80 bg-white/65 px-5 py-5 text-sm leading-7 text-slate-600 dark:border-slate-700/80 dark:bg-slate-950/60 dark:text-slate-300">
       {message}
     </div>
   );
@@ -664,7 +870,7 @@ function MasteryBandPill({
 
   return (
     <span
-      className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] ${className}`}
+      className={`inline-flex rounded-full border px-3 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.16em] ${className}`}
     >
       {masteryBand ?? "-"}
     </span>
@@ -701,44 +907,6 @@ function formatDateTime(value: string | null) {
   }
 
   return dateTimeFormatter.format(new Date(value));
-}
-
-function sortFocusAreaRowsByBand(
-  rows: PracticeStatsRequiredAreaRow[],
-  masteryBand: PracticeStatsRequiredAreaRow["masteryBand"],
-) {
-  return rows
-    .filter((row) => row.masteryBand === masteryBand)
-    .sort((left, right) => {
-      if (masteryBand === "strong" && left.masteryRatio !== right.masteryRatio) {
-        return right.masteryRatio - left.masteryRatio;
-      }
-
-      if (masteryBand !== "strong" && left.masteryRatio !== right.masteryRatio) {
-        return left.masteryRatio - right.masteryRatio;
-      }
-
-      if (left.timesTested !== right.timesTested) {
-        return right.timesTested - left.timesTested;
-      }
-
-      const leftTimestamp = left.lastPractisedAt ?? "";
-      const rightTimestamp = right.lastPractisedAt ?? "";
-
-      if (leftTimestamp !== rightTimestamp) {
-        return rightTimestamp.localeCompare(leftTimestamp);
-      }
-
-      const labelComparison = left.requiredAreaLabel.localeCompare(
-        right.requiredAreaLabel,
-      );
-
-      if (labelComparison !== 0) {
-        return labelComparison;
-      }
-
-      return left.subtopicName.localeCompare(right.subtopicName);
-    });
 }
 
 function formatResultsSummary(row: PracticeStatsRequiredAreaRow) {

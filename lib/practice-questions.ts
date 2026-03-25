@@ -24,6 +24,7 @@ import {
   getAuthenticatedUserId,
   type UserQuestionProgressSnapshot,
 } from "@/lib/practice-progress";
+import { isMissingColumnError } from "@/lib/supabase-errors";
 import { createClient } from "@/utils/supabase/server";
 
 type PracticeQuestionApiResult<T> = {
@@ -983,13 +984,6 @@ function normalizeStoredModelAnswer(modelAnswer: string | null) {
   const trimmedModelAnswer = modelAnswer.trim();
 
   return trimmedModelAnswer.length > 0 ? trimmedModelAnswer : null;
-}
-
-function isMissingColumnError(caughtError: unknown, columnName: string) {
-  const errorMessage =
-    caughtError instanceof Error ? caughtError.message : String(caughtError);
-
-  return errorMessage.toLowerCase().includes(columnName.toLowerCase());
 }
 
 function logGenerateQuestionDebug(

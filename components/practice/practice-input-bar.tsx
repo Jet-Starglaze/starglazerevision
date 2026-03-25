@@ -11,9 +11,13 @@ type PracticeInputBarProps = {
   value: string;
   onValueChange: (value: string) => void;
   onSubmit: () => void;
+  onSecondaryAction?: () => void;
   readOnly?: boolean;
   submitDisabled?: boolean;
   submitAriaLabel?: string;
+  secondaryActionLabel?: string;
+  secondaryActionDisabled?: boolean;
+  secondaryActionAriaLabel?: string;
   footerNote?: ReactNode;
   focusTrigger?: number;
   isRewriteEmphasized?: boolean;
@@ -23,9 +27,13 @@ export default function PracticeInputBar({
   value,
   onValueChange,
   onSubmit,
+  onSecondaryAction,
   readOnly = false,
   submitDisabled = false,
   submitAriaLabel = "Submit answer",
+  secondaryActionLabel,
+  secondaryActionDisabled = false,
+  secondaryActionAriaLabel,
   footerNote,
   focusTrigger = 0,
   isRewriteEmphasized = false,
@@ -45,6 +53,8 @@ export default function PracticeInputBar({
   );
   const [isListening, setIsListening] = useState(false);
   const isSubmitDisabled = readOnly || submitDisabled;
+  const isSecondaryActionDisabled =
+    readOnly || secondaryActionDisabled || !onSecondaryAction;
   const isMicrophoneDisabled =
     readOnly || speechSupport !== "supported";
   const containerClassName = isRewriteEmphasized
@@ -339,6 +349,18 @@ export default function PracticeInputBar({
         </div>
 
         <div className="flex items-center gap-2">
+          {secondaryActionLabel ? (
+            <button
+              aria-label={secondaryActionAriaLabel ?? secondaryActionLabel}
+              className="inline-flex min-h-11 items-center justify-center rounded-full border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:text-white dark:disabled:border-slate-800 dark:disabled:bg-slate-900 dark:disabled:text-slate-600"
+              disabled={isSecondaryActionDisabled}
+              onClick={onSecondaryAction}
+              type="button"
+            >
+              {secondaryActionLabel}
+            </button>
+          ) : null}
+
           <button
             aria-label={
               speechSupport === "unsupported"

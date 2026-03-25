@@ -1,11 +1,15 @@
-import type { PracticeRubricAssessment } from "@/lib/mock-biology-practice-api";
+import type { PracticeRubricAssessment } from "./mock-biology-practice-api.ts";
 import {
   toNumericId,
   type GeneratedMarkingRubricPoint,
   type SupabaseServerClient,
-} from "@/lib/generated-practice-content";
+} from "./generated-practice-content.ts";
+import {
+  hasReachedPracticeCompletionThreshold,
+} from "./practice-completion.ts";
+import { isMissingColumnError } from "./supabase-errors.ts";
 
-type GeneratedQuestionAttemptRow = {
+export type GeneratedQuestionAttemptRow = {
   generated_question_id: number | string;
   subtopic_id: number | string;
   attempt_number: number;
@@ -14,9 +18,17 @@ type GeneratedQuestionAttemptRow = {
   created_at: string | null;
 };
 
-type ExistingQuestionProgressRow = {
+export type ExistingQuestionProgressRow = {
+  attempts_total: number | null;
+  best_score: number | null;
+  max_score: number | null;
+  last_score: number | null;
+  completed: boolean | null;
   times_seen: number | null;
   completed_at: string | null;
+  last_attempted_at: string | null;
+  times_skipped: number | null;
+  last_skipped_at: string | null;
 };
 
 export type UserQuestionProgressSnapshot = {
@@ -26,7 +38,14 @@ export type UserQuestionProgressSnapshot = {
   last_attempted_at: string | null;
 };
 
-type UserQuestionProgressUpdate = {
+type SubtopicQuestionProgressRow = {
+  generated_question_id: number | string;
+  completed: boolean | null;
+  last_attempted_at: string | null;
+  last_skipped_at: string | null;
+};
+
+export type UserQuestionProgressUpdate = {
   user_id: string;
   generated_question_id: number;
   subtopic_id: number;
@@ -36,11 +55,13 @@ type UserQuestionProgressUpdate = {
   last_score: number;
   completed: boolean;
   completed_at: string | null;
-  last_attempted_at: string;
+  last_attempted_at: string | null;
   times_seen: number;
+  times_skipped: number;
+  last_skipped_at: string | null;
 };
 
-type UserSubtopicProgressUpdate = {
+export type UserSubtopicProgressUpdate = {
   user_id: string;
   subtopic_id: number;
   questions_seen: number;
@@ -91,6 +112,11 @@ type RequiredAreaProgressIncrement = {
 };
 
 export type PracticeMasteryBand = "weak" | "developing" | "strong";
+let userQuestionProgressSkipColumnsAvailable: boolean | null = null;
+
+export function resetPracticeProgressSkipColumnsAvailabilityForTests() {
+  userQuestionProgressSkipColumnsAvailable = null;
+}
 
 export async function getAuthenticatedUserId(
   supabase: SupabaseServerClient,
@@ -106,17 +132,10 @@ export async function getAuthenticatedUserId(
 
   return user?.id ?? null;
 }
-
-export function getPracticeCompletionThreshold(maxScore: number) {
-  return maxScore <= 3 ? maxScore : maxScore - 1;
-}
-
-export function hasReachedPracticeCompletionThreshold(
-  score: number,
-  maxScore: number,
-) {
-  return score >= getPracticeCompletionThreshold(maxScore);
-}
+export {
+  getPracticeCompletionThreshold,
+  hasReachedPracticeCompletionThreshold,
+} from "./practice-completion.ts";
 
 export async function fetchUserQuestionProgressForQuestions(
   supabase: SupabaseServerClient,
@@ -198,15 +217,67 @@ export async function recordGeneratedQuestionAttemptAndProgress({
 
   await upsertUserQuestionProgress(supabase, questionProgressUpdate);
 
-  const subtopicAttempts = await fetchSubtopicAttempts(
-    supabase,
-    userId,
-    normalizedSubtopicId,
-  );
+  const [subtopicAttempts, subtopicQuestionProgress] = await Promise.all([
+    fetchSubtopicAttempts(supabase, userId, normalizedSubtopicId),
+    fetchSubtopicQuestionProgress(supabase, userId, normalizedSubtopicId),
+  ]);
   const subtopicProgressUpdate = buildUserSubtopicProgressUpdate({
     userId,
     subtopicId: normalizedSubtopicId,
     attempts: subtopicAttempts,
+    questionProgressRows: subtopicQuestionProgress,
+  });
+
+  await upsertUserSubtopicProgress(supabase, subtopicProgressUpdate);
+}
+
+export async function recordSkippedQuestionProgress({
+  supabase,
+  userId,
+  generatedQuestionId,
+  subtopicId,
+  maxScore,
+}: {
+  supabase: SupabaseServerClient;
+  userId: string;
+  generatedQuestionId: number | string;
+  subtopicId: number | string;
+  maxScore: number;
+}) {
+  const normalizedQuestionId = toNumericId(generatedQuestionId);
+  const normalizedSubtopicId = toNumericId(subtopicId);
+  const [existingQuestionProgress, questionAttempts] = await Promise.all([
+    fetchExistingQuestionProgress(supabase, userId, normalizedQuestionId),
+    fetchQuestionAttempts(supabase, userId, normalizedQuestionId),
+  ]);
+
+  if (userQuestionProgressSkipColumnsAvailable === false) {
+    throw new Error(
+      "Skip tracking columns are unavailable on user_question_progress.",
+    );
+  }
+
+  const questionProgressUpdate = buildUserQuestionProgressUpdate({
+    userId,
+    generatedQuestionId: normalizedQuestionId,
+    subtopicId: normalizedSubtopicId,
+    maxScore,
+    existingQuestionProgress,
+    questionAttempts,
+    skippedAt: new Date().toISOString(),
+  });
+
+  await upsertUserQuestionProgress(supabase, questionProgressUpdate);
+
+  const [subtopicAttempts, subtopicQuestionProgress] = await Promise.all([
+    fetchSubtopicAttempts(supabase, userId, normalizedSubtopicId),
+    fetchSubtopicQuestionProgress(supabase, userId, normalizedSubtopicId),
+  ]);
+  const subtopicProgressUpdate = buildUserSubtopicProgressUpdate({
+    userId,
+    subtopicId: normalizedSubtopicId,
+    attempts: subtopicAttempts,
+    questionProgressRows: subtopicQuestionProgress,
   });
 
   await upsertUserSubtopicProgress(supabase, subtopicProgressUpdate);
@@ -386,18 +457,37 @@ async function fetchExistingQuestionProgress(
   userId: string,
   generatedQuestionId: number,
 ) {
+  const includeSkipColumns = userQuestionProgressSkipColumnsAvailable !== false;
   const { data, error } = await supabase
     .from("user_question_progress")
-    .select("times_seen, completed_at")
+    .select(buildExistingQuestionProgressSelect(includeSkipColumns))
     .eq("user_id", userId)
     .eq("generated_question_id", generatedQuestionId)
     .maybeSingle();
 
   if (error) {
+    if (
+      includeSkipColumns &&
+      isMissingUserQuestionProgressSkipColumnError(error)
+    ) {
+      userQuestionProgressSkipColumnsAvailable = false;
+      console.warn(
+        "[practice-progress] Skip tracking columns unavailable on user_question_progress",
+      );
+
+      return fetchExistingQuestionProgress(supabase, userId, generatedQuestionId);
+    }
+
     throw new Error(`Failed to load question progress: ${error.message}`);
   }
 
-  return (data ?? null) as ExistingQuestionProgressRow | null;
+  if (includeSkipColumns) {
+    userQuestionProgressSkipColumnsAvailable = true;
+  }
+
+  return normalizeExistingQuestionProgressRow(
+    data as Partial<ExistingQuestionProgressRow> | null,
+  );
 }
 
 async function fetchQuestionAttempts(
@@ -444,13 +534,49 @@ async function fetchSubtopicAttempts(
   return (data ?? []) as GeneratedQuestionAttemptRow[];
 }
 
-function buildUserQuestionProgressUpdate({
+async function fetchSubtopicQuestionProgress(
+  supabase: SupabaseServerClient,
+  userId: string,
+  subtopicId: number,
+) {
+  const includeSkipColumns = userQuestionProgressSkipColumnsAvailable !== false;
+  const { data, error } = await supabase
+    .from("user_question_progress")
+    .select(buildSubtopicQuestionProgressSelect(includeSkipColumns))
+    .eq("user_id", userId)
+    .eq("subtopic_id", subtopicId);
+
+  if (error) {
+    if (
+      includeSkipColumns &&
+      isMissingUserQuestionProgressSkipColumnError(error)
+    ) {
+      userQuestionProgressSkipColumnsAvailable = false;
+      console.warn(
+        "[practice-progress] Skip tracking columns unavailable on user_question_progress",
+      );
+
+      return fetchSubtopicQuestionProgress(supabase, userId, subtopicId);
+    }
+
+    throw new Error(`Failed to load subtopic question progress: ${error.message}`);
+  }
+
+  if (includeSkipColumns) {
+    userQuestionProgressSkipColumnsAvailable = true;
+  }
+
+  return (data ?? []).map((row) => normalizeSubtopicQuestionProgressRow(row));
+}
+
+export function buildUserQuestionProgressUpdate({
   userId,
   generatedQuestionId,
   subtopicId,
   maxScore,
   existingQuestionProgress,
   questionAttempts,
+  skippedAt = null,
 }: {
   userId: string;
   generatedQuestionId: number;
@@ -458,34 +584,49 @@ function buildUserQuestionProgressUpdate({
   maxScore: number;
   existingQuestionProgress: ExistingQuestionProgressRow | null;
   questionAttempts: GeneratedQuestionAttemptRow[];
+  skippedAt?: string | null;
 }): UserQuestionProgressUpdate {
   const orderedAttempts = [...questionAttempts].sort(compareAttempts);
-  const bestScore = orderedAttempts.reduce((currentBest, attempt) => {
-    return Math.max(currentBest, attempt.score);
-  }, 0);
-  const latestAttempt = orderedAttempts[orderedAttempts.length - 1];
-  const completionThreshold = getPracticeCompletionThreshold(maxScore);
-  const isCompleted = bestScore >= completionThreshold;
+  const latestAttempt = orderedAttempts[orderedAttempts.length - 1] ?? null;
+  const attemptsTotal =
+    orderedAttempts.length > 0
+      ? orderedAttempts.length
+      : existingQuestionProgress?.attempts_total ?? 0;
+  const bestScore =
+    orderedAttempts.length > 0
+      ? orderedAttempts.reduce((currentBest, attempt) => {
+          return Math.max(currentBest, attempt.score);
+        }, 0)
+      : existingQuestionProgress?.best_score ?? 0;
+  const effectiveMaxScore = latestAttempt?.max_score ?? maxScore;
+  const isCompleted = hasReachedPracticeCompletionThreshold(
+    bestScore,
+    effectiveMaxScore,
+  );
   const firstCompletedAttempt = orderedAttempts.find((attempt) =>
-    hasReachedPracticeCompletionThreshold(attempt.score, maxScore),
+    hasReachedPracticeCompletionThreshold(attempt.score, attempt.max_score),
   );
 
   return {
     user_id: userId,
     generated_question_id: generatedQuestionId,
     subtopic_id: subtopicId,
-    attempts_total: orderedAttempts.length,
+    attempts_total: attemptsTotal,
     best_score: bestScore,
-    max_score: maxScore,
-    last_score: latestAttempt?.score ?? 0,
+    max_score: effectiveMaxScore,
+    last_score: latestAttempt?.score ?? existingQuestionProgress?.last_score ?? 0,
     completed: isCompleted,
     completed_at: isCompleted
       ? existingQuestionProgress?.completed_at ??
         firstCompletedAttempt?.created_at ??
         null
       : null,
-    last_attempted_at: latestAttempt?.created_at ?? new Date().toISOString(),
-    times_seen: Math.max(existingQuestionProgress?.times_seen ?? 1, 1),
+    last_attempted_at:
+      latestAttempt?.created_at ?? existingQuestionProgress?.last_attempted_at ?? null,
+    times_seen: Math.max(existingQuestionProgress?.times_seen ?? 0, 1),
+    times_skipped:
+      (existingQuestionProgress?.times_skipped ?? 0) + (skippedAt ? 1 : 0),
+    last_skipped_at: skippedAt ?? existingQuestionProgress?.last_skipped_at ?? null,
   };
 }
 
@@ -493,26 +634,46 @@ async function upsertUserQuestionProgress(
   supabase: SupabaseServerClient,
   progressUpdate: UserQuestionProgressUpdate,
 ) {
+  const includeSkipColumns = userQuestionProgressSkipColumnsAvailable !== false;
   const { error } = await supabase.from("user_question_progress").upsert(
-    progressUpdate,
+    buildUserQuestionProgressUpsertPayload(progressUpdate, includeSkipColumns),
     {
       onConflict: "user_id,generated_question_id",
     },
   );
 
   if (error) {
+    if (
+      includeSkipColumns &&
+      isMissingUserQuestionProgressSkipColumnError(error)
+    ) {
+      userQuestionProgressSkipColumnsAvailable = false;
+      console.warn(
+        "[practice-progress] Skip tracking columns unavailable on user_question_progress",
+      );
+
+      await upsertUserQuestionProgress(supabase, progressUpdate);
+      return;
+    }
+
     throw new Error(`Failed to upsert question progress: ${error.message}`);
+  }
+
+  if (includeSkipColumns) {
+    userQuestionProgressSkipColumnsAvailable = true;
   }
 }
 
-function buildUserSubtopicProgressUpdate({
+export function buildUserSubtopicProgressUpdate({
   userId,
   subtopicId,
   attempts,
+  questionProgressRows,
 }: {
   userId: string;
   subtopicId: number;
   attempts: GeneratedQuestionAttemptRow[];
+  questionProgressRows: SubtopicQuestionProgressRow[];
 }): UserSubtopicProgressUpdate {
   const attemptsByQuestion = new Map<number, QuestionAttemptSummary>();
   let totalScore = 0;
@@ -551,23 +712,40 @@ function buildUserSubtopicProgressUpdate({
   }
 
   const questionSummaries = [...attemptsByQuestion.values()];
-  const questionsSeen = questionSummaries.length;
-  const questionsCompleted = questionSummaries.reduce((count, question) => {
-    return (
-      count +
-      (hasReachedPracticeCompletionThreshold(
-        question.bestScore,
-        question.latestMaxScore,
-      )
-        ? 1
-        : 0)
-    );
-  }, 0);
+  const questionsSeen =
+    questionProgressRows.length > 0 ? questionProgressRows.length : questionSummaries.length;
+  const questionsCompleted =
+    questionProgressRows.length > 0
+      ? questionProgressRows.reduce((count, questionProgress) => {
+          return count + (questionProgress.completed === true ? 1 : 0);
+        }, 0)
+      : questionSummaries.reduce((count, question) => {
+          return (
+            count +
+            (hasReachedPracticeCompletionThreshold(
+              question.bestScore,
+              question.latestMaxScore,
+            )
+              ? 1
+              : 0)
+          );
+        }, 0);
   const totalAttempts = attempts.length;
   const avgScoreRatio =
     totalMaxScore > 0 ? roundMetric(totalScore / totalMaxScore) : 0;
   const avgAttemptsPerQuestion =
-    questionsSeen > 0 ? roundMetric(totalAttempts / questionsSeen) : 0;
+    questionSummaries.length > 0
+      ? roundMetric(totalAttempts / questionSummaries.length)
+      : 0;
+  const lastProgressActivityAt = questionProgressRows.reduce<string | null>(
+    (currentLatest, questionProgress) => {
+      return maxIsoTimestamp(
+        maxIsoTimestamp(currentLatest, questionProgress.last_attempted_at),
+        questionProgress.last_skipped_at,
+      );
+    },
+    null,
+  );
 
   return {
     user_id: userId,
@@ -580,7 +758,9 @@ function buildUserSubtopicProgressUpdate({
     avg_score_ratio: avgScoreRatio,
     avg_attempts_per_question: avgAttemptsPerQuestion,
     mastery_band: getMasteryBand(avgScoreRatio),
-    last_practised_at: lastPractisedAt ?? new Date().toISOString(),
+    last_practised_at:
+      maxIsoTimestamp(lastPractisedAt, lastProgressActivityAt) ??
+      new Date().toISOString(),
   };
 }
 
@@ -769,4 +949,90 @@ function maxIsoTimestamp(left: string | null, right: string | null) {
 
 function roundMetric(value: number) {
   return Number(value.toFixed(4));
+}
+
+function buildExistingQuestionProgressSelect(includeSkipColumns: boolean) {
+  const selectColumns = [
+    "attempts_total",
+    "best_score",
+    "max_score",
+    "last_score",
+    "completed",
+    "times_seen",
+    "completed_at",
+    "last_attempted_at",
+  ];
+
+  if (includeSkipColumns) {
+    selectColumns.push("times_skipped", "last_skipped_at");
+  }
+
+  return selectColumns.join(", ");
+}
+
+function buildSubtopicQuestionProgressSelect(includeSkipColumns: boolean) {
+  const selectColumns = [
+    "generated_question_id",
+    "completed",
+    "last_attempted_at",
+  ];
+
+  if (includeSkipColumns) {
+    selectColumns.push("last_skipped_at");
+  }
+
+  return selectColumns.join(", ");
+}
+
+function buildUserQuestionProgressUpsertPayload(
+  progressUpdate: UserQuestionProgressUpdate,
+  includeSkipColumns: boolean,
+) {
+  if (includeSkipColumns) {
+    return progressUpdate;
+  }
+
+  const { times_skipped, last_skipped_at, ...supportedColumns } = progressUpdate;
+  void times_skipped;
+  void last_skipped_at;
+  return supportedColumns;
+}
+
+function normalizeExistingQuestionProgressRow(
+  row: Partial<ExistingQuestionProgressRow> | null,
+): ExistingQuestionProgressRow | null {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    attempts_total: row.attempts_total ?? null,
+    best_score: row.best_score ?? null,
+    max_score: row.max_score ?? null,
+    last_score: row.last_score ?? null,
+    completed: row.completed ?? null,
+    times_seen: row.times_seen ?? null,
+    completed_at: row.completed_at ?? null,
+    last_attempted_at: row.last_attempted_at ?? null,
+    times_skipped: row.times_skipped ?? null,
+    last_skipped_at: row.last_skipped_at ?? null,
+  };
+}
+
+function normalizeSubtopicQuestionProgressRow(row: unknown): SubtopicQuestionProgressRow {
+  const normalizedRow = row as Partial<SubtopicQuestionProgressRow>;
+
+  return {
+    generated_question_id: normalizedRow.generated_question_id ?? 0,
+    completed: normalizedRow.completed ?? null,
+    last_attempted_at: normalizedRow.last_attempted_at ?? null,
+    last_skipped_at: normalizedRow.last_skipped_at ?? null,
+  };
+}
+
+function isMissingUserQuestionProgressSkipColumnError(caughtError: unknown) {
+  return (
+    isMissingColumnError(caughtError, "times_skipped") ||
+    isMissingColumnError(caughtError, "last_skipped_at")
+  );
 }

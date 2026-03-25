@@ -1,6 +1,6 @@
 import AppShellNavbar from "@/components/app-shell-navbar";
 
-export default async function SubjectsLayout({
+export default function DashboardLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
@@ -8,10 +8,7 @@ export default async function SubjectsLayout({
   return (
     <div className="min-h-screen bg-slate-100 dark:bg-slate-950">
       <AppShellNavbar />
-
-      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-        {children}
-      </main>
+      {children}
     </div>
   );
 }

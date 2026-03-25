@@ -1,15 +1,20 @@
-import { formatRequiredAreaLabel } from "@/lib/required-area-display";
-import { createClient } from "@/utils/supabase/server";
+import { formatRequiredAreaLabel } from "./required-area-display.ts";
+import { isMissingColumnError } from "./supabase-errors.ts";
+import type { createClient } from "../utils/supabase/server.ts";
 
 type PracticeStatsClient = Awaited<ReturnType<typeof createClient>>;
 
 type PracticeMasteryBand = "weak" | "developing" | "strong";
 
 type UserQuestionProgressRow = {
+  generated_question_id: number | string;
+  subtopic_id: number | string;
   attempts_total: number | null;
   best_score: number | null;
   completed: boolean | null;
   max_score: number | null;
+  times_skipped: number | null;
+  last_skipped_at: string | null;
 };
 
 type UserSubtopicProgressRow = {
@@ -53,10 +58,16 @@ type SubtopicLookupRow = {
   code: string;
   name: string;
 };
+let userQuestionProgressSkipColumnsAvailable: boolean | null = null;
+
+export function resetPracticeStatsSkipColumnsAvailabilityForTests() {
+  userQuestionProgressSkipColumnsAvailable = null;
+}
 
 export type PracticeStatsSummary = {
   questionsAttempted: number;
   questionsCompleted: number;
+  questionsSkipped: number;
   averageScoreRatio: number;
   averageAttemptsPerQuestion: number;
   averageAttemptsToCompletion: number | null;
@@ -101,6 +112,16 @@ export type PracticeStatsRecentAttemptRow = {
   createdAt: string | null;
 };
 
+export type PracticeStatsSkippedQuestionRow = {
+  generatedQuestionId: number;
+  questionText: string;
+  subtopicId: number;
+  subtopicCode: string | null;
+  subtopicName: string;
+  attemptsTotal: number;
+  skippedAt: string | null;
+};
+
 export type PracticeStatsFocusNext = {
   weakestSubtopic: PracticeStatsSubtopicRow | null;
   weakestRequiredArea: PracticeStatsRequiredAreaRow | null;
@@ -112,6 +133,7 @@ export type PracticeStatsPayload = {
   subtopicProgress: PracticeStatsSubtopicRow[];
   requiredAreaProgress: PracticeStatsRequiredAreaRow[];
   recentAttempts: PracticeStatsRecentAttemptRow[];
+  recentSkippedQuestions: PracticeStatsSkippedQuestionRow[];
   focusNext: PracticeStatsFocusNext;
 };
 
@@ -124,11 +146,13 @@ export async function fetchPracticeStats(
     subtopicProgress,
     requiredAreaProgress,
     recentAttempts,
+    recentSkippedQuestions,
   ] = await Promise.all([
     fetchPracticeStatsSummary(supabase, userId),
     fetchPracticeStatsSubtopicProgress(supabase, userId),
     fetchPracticeStatsRequiredAreaProgress(supabase, userId),
     fetchPracticeStatsRecentAttempts(supabase, userId),
+    fetchPracticeStatsRecentSkippedQuestions(supabase, userId),
   ]);
 
   return {
@@ -136,6 +160,7 @@ export async function fetchPracticeStats(
     subtopicProgress,
     requiredAreaProgress,
     recentAttempts,
+    recentSkippedQuestions,
     focusNext: {
       weakestSubtopic: subtopicProgress[0] ?? null,
       weakestRequiredArea: requiredAreaProgress[0] ?? null,
@@ -150,41 +175,12 @@ async function fetchPracticeStatsSummary(
   supabase: PracticeStatsClient,
   userId: string,
 ): Promise<PracticeStatsSummary> {
-  const { data, error } = await supabase
-    .from("user_question_progress")
-    .select("attempts_total, best_score, completed, max_score")
-    .eq("user_id", userId);
+  const rows = await fetchUserQuestionProgressRowsForStats({
+    supabase,
+    userId,
+  });
 
-  if (error) {
-    throw new Error(`Failed to load practice stats summary: ${error.message}`);
-  }
-
-  const rows = (data ?? []) as UserQuestionProgressRow[];
-  const questionsAttempted = rows.length;
-  const completedRows = rows.filter((row) => row.completed === true);
-  const totalBestScore = rows.reduce((sum, row) => sum + (row.best_score ?? 0), 0);
-  const totalMaxScore = rows.reduce((sum, row) => sum + (row.max_score ?? 0), 0);
-  const totalAttempts = rows.reduce(
-    (sum, row) => sum + (row.attempts_total ?? 0),
-    0,
-  );
-  const completedAttempts = completedRows.reduce(
-    (sum, row) => sum + (row.attempts_total ?? 0),
-    0,
-  );
-
-  return {
-    questionsAttempted,
-    questionsCompleted: completedRows.length,
-    averageScoreRatio:
-      totalMaxScore > 0 ? roundMetric(totalBestScore / totalMaxScore) : 0,
-    averageAttemptsPerQuestion:
-      questionsAttempted > 0 ? roundMetric(totalAttempts / questionsAttempted) : 0,
-    averageAttemptsToCompletion:
-      completedRows.length > 0
-        ? roundMetric(completedAttempts / completedRows.length)
-        : null,
-  };
+  return buildPracticeStatsSummary(rows);
 }
 
 async function fetchPracticeStatsSubtopicProgress(
@@ -321,6 +317,109 @@ async function fetchPracticeStatsRecentAttempts(
   });
 }
 
+async function fetchPracticeStatsRecentSkippedQuestions(
+  supabase: PracticeStatsClient,
+  userId: string,
+): Promise<PracticeStatsSkippedQuestionRow[]> {
+  if (userQuestionProgressSkipColumnsAvailable === false) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("user_question_progress")
+    .select(
+      "generated_question_id, subtopic_id, attempts_total, times_skipped, last_skipped_at",
+    )
+    .eq("user_id", userId)
+    .gt("times_skipped", 0)
+    .not("last_skipped_at", "is", null)
+    .order("last_skipped_at", { ascending: false })
+    .limit(10);
+
+  if (error) {
+    if (isMissingUserQuestionProgressSkipColumnError(error)) {
+      userQuestionProgressSkipColumnsAvailable = false;
+      console.warn(
+        "[practice-stats] Skip tracking columns unavailable on user_question_progress",
+      );
+      return [];
+    }
+
+    throw new Error(`Failed to load recent skipped questions: ${error.message}`);
+  }
+
+  userQuestionProgressSkipColumnsAvailable = true;
+
+  const rows = (data ?? []) as UserQuestionProgressRow[];
+  const [questionLookup, subtopicLookup] = await Promise.all([
+    fetchGeneratedQuestionLookup(
+      supabase,
+      rows.map((row) => row.generated_question_id),
+    ),
+    fetchSubtopicLookup(
+      supabase,
+      rows.map((row) => row.subtopic_id),
+    ),
+  ]);
+
+  return sortRecentSkippedQuestionRows(
+    rows.map((row) => {
+      const generatedQuestionId = toNumericId(row.generated_question_id);
+      const subtopicId = toNumericId(row.subtopic_id);
+      const question = questionLookup.get(generatedQuestionId);
+      const subtopic = subtopicLookup.get(subtopicId);
+
+      return {
+        generatedQuestionId,
+        questionText: question?.question_text ?? `Question ${generatedQuestionId}`,
+        subtopicId,
+        subtopicCode: subtopic?.code ?? null,
+        subtopicName: subtopic?.name ?? `Subtopic ${subtopicId}`,
+        attemptsTotal: row.attempts_total ?? 0,
+        skippedAt: row.last_skipped_at ?? null,
+      };
+    }),
+  );
+}
+
+async function fetchUserQuestionProgressRowsForStats({
+  supabase,
+  userId,
+}: {
+  supabase: PracticeStatsClient;
+  userId: string;
+}) {
+  const includeSkipColumns = userQuestionProgressSkipColumnsAvailable !== false;
+  const { data, error } = await supabase
+    .from("user_question_progress")
+    .select(buildUserQuestionProgressStatsSelect(includeSkipColumns))
+    .eq("user_id", userId);
+
+  if (error) {
+    if (
+      includeSkipColumns &&
+      isMissingUserQuestionProgressSkipColumnError(error)
+    ) {
+      userQuestionProgressSkipColumnsAvailable = false;
+      console.warn(
+        "[practice-stats] Skip tracking columns unavailable on user_question_progress",
+      );
+
+      return fetchUserQuestionProgressRowsForStats({ supabase, userId });
+    }
+
+    throw new Error(`Failed to load practice stats summary: ${error.message}`);
+  }
+
+  if (includeSkipColumns) {
+    userQuestionProgressSkipColumnsAvailable = true;
+  }
+
+  return (data ?? []).map((row) =>
+    normalizeUserQuestionProgressRow(row as Partial<UserQuestionProgressRow>),
+  );
+}
+
 async function fetchSubtopicLookup(
   supabase: PracticeStatsClient,
   subtopicIds: Array<number | string>,
@@ -455,4 +554,96 @@ function toNumericId(value: number | string) {
 
 function roundMetric(value: number) {
   return Number(value.toFixed(4));
+}
+
+export function buildPracticeStatsSummary(rows: UserQuestionProgressRow[]) {
+  const attemptedRows = rows.filter((row) => (row.attempts_total ?? 0) > 0);
+  const completedRows = rows.filter((row) => row.completed === true);
+  const skippedRows = rows.filter((row) => (row.times_skipped ?? 0) > 0);
+  const totalBestScore = attemptedRows.reduce(
+    (sum, row) => sum + (row.best_score ?? 0),
+    0,
+  );
+  const totalMaxScore = attemptedRows.reduce(
+    (sum, row) => sum + (row.max_score ?? 0),
+    0,
+  );
+  const totalAttempts = attemptedRows.reduce(
+    (sum, row) => sum + (row.attempts_total ?? 0),
+    0,
+  );
+  const completedAttempts = completedRows.reduce(
+    (sum, row) => sum + (row.attempts_total ?? 0),
+    0,
+  );
+
+  return {
+    questionsAttempted: attemptedRows.length,
+    questionsCompleted: completedRows.length,
+    questionsSkipped: skippedRows.length,
+    averageScoreRatio:
+      totalMaxScore > 0 ? roundMetric(totalBestScore / totalMaxScore) : 0,
+    averageAttemptsPerQuestion:
+      attemptedRows.length > 0
+        ? roundMetric(totalAttempts / attemptedRows.length)
+        : 0,
+    averageAttemptsToCompletion:
+      completedRows.length > 0
+        ? roundMetric(completedAttempts / completedRows.length)
+        : null,
+  };
+}
+
+export function sortRecentSkippedQuestionRows(
+  rows: PracticeStatsSkippedQuestionRow[],
+) {
+  return [...rows].sort((left, right) => {
+    const leftTimestamp = left.skippedAt ?? "";
+    const rightTimestamp = right.skippedAt ?? "";
+
+    if (leftTimestamp !== rightTimestamp) {
+      return rightTimestamp.localeCompare(leftTimestamp);
+    }
+
+    return left.questionText.localeCompare(right.questionText);
+  });
+}
+
+function buildUserQuestionProgressStatsSelect(includeSkipColumns: boolean) {
+  const selectColumns = [
+    "generated_question_id",
+    "subtopic_id",
+    "attempts_total",
+    "best_score",
+    "completed",
+    "max_score",
+  ];
+
+  if (includeSkipColumns) {
+    selectColumns.push("times_skipped", "last_skipped_at");
+  }
+
+  return selectColumns.join(", ");
+}
+
+function normalizeUserQuestionProgressRow(
+  row: Partial<UserQuestionProgressRow>,
+): UserQuestionProgressRow {
+  return {
+    generated_question_id: row.generated_question_id ?? 0,
+    subtopic_id: row.subtopic_id ?? 0,
+    attempts_total: row.attempts_total ?? null,
+    best_score: row.best_score ?? null,
+    completed: row.completed ?? null,
+    max_score: row.max_score ?? null,
+    times_skipped: row.times_skipped ?? null,
+    last_skipped_at: row.last_skipped_at ?? null,
+  };
+}
+
+function isMissingUserQuestionProgressSkipColumnError(caughtError: unknown) {
+  return (
+    isMissingColumnError(caughtError, "times_skipped") ||
+    isMissingColumnError(caughtError, "last_skipped_at")
+  );
 }
