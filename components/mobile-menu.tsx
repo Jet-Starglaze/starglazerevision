@@ -6,7 +6,7 @@ import type { NavLinkItem } from "@/lib/navigation";
 
 type MobileMenuProps = {
   items: NavLinkItem[];
-  primaryAction: NavLinkItem;
+  primaryAction?: NavLinkItem;
 };
 
 export default function MobileMenu({
@@ -124,19 +124,21 @@ export default function MobileMenu({
             })}
             </nav>
 
-            <Link
-              className={`mt-2 inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition duration-200 hover:from-sky-700 hover:to-blue-800 ${
-                isOpen ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"
-              }`}
-              href={primaryAction.href}
-              onClick={closeMenu}
-              prefetch={primaryAction.prefetch}
-              style={{
-                transitionDelay: isOpen ? `${items.length * 35}ms` : "0ms",
-              }}
-            >
-              {primaryAction.label}
-            </Link>
+            {primaryAction ? (
+              <Link
+                className={`mt-2 inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition duration-200 hover:from-sky-700 hover:to-blue-800 ${
+                  isOpen ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"
+                }`}
+                href={primaryAction.href}
+                onClick={closeMenu}
+                prefetch={primaryAction.prefetch}
+                style={{
+                  transitionDelay: isOpen ? `${items.length * 35}ms` : "0ms",
+                }}
+              >
+                {primaryAction.label}
+              </Link>
+            ) : null}
           </div>
         </div>
       </div>

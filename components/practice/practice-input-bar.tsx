@@ -21,6 +21,8 @@ type PracticeInputBarProps = {
   footerNote?: ReactNode;
   focusTrigger?: number;
   isRewriteEmphasized?: boolean;
+  layout?: "default" | "phone";
+  showInlineActions?: boolean;
 };
 
 export default function PracticeInputBar({
@@ -37,6 +39,8 @@ export default function PracticeInputBar({
   footerNote,
   focusTrigger = 0,
   isRewriteEmphasized = false,
+  layout = "default",
+  showInlineActions = true,
 }: PracticeInputBarProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
@@ -57,9 +61,16 @@ export default function PracticeInputBar({
     readOnly || secondaryActionDisabled || !onSecondaryAction;
   const isMicrophoneDisabled =
     readOnly || speechSupport !== "supported";
-  const containerClassName = isRewriteEmphasized
-    ? "rounded-[30px] border border-sky-200/80 bg-white px-4 py-4 shadow-[0_26px_80px_-56px_rgba(14,116,144,0.5)] ring-1 ring-sky-100/80 backdrop-blur-xl transition-[border-color,box-shadow,background-color,transform] duration-200 focus-within:border-sky-300 focus-within:shadow-[0_28px_86px_-58px_rgba(2,132,199,0.48)] dark:border-sky-500/30 dark:bg-slate-900/92 dark:ring-sky-500/10 dark:focus-within:border-sky-400/60 dark:focus-within:bg-slate-900/98"
-    : "rounded-[30px] border border-slate-200/80 bg-white/92 px-4 py-4 shadow-[0_28px_80px_-52px_rgba(15,23,42,0.55)] backdrop-blur-xl transition-[border-color,box-shadow,background-color] duration-200 focus-within:border-slate-300 focus-within:bg-white dark:border-white/10 dark:bg-slate-900/88 dark:shadow-[0_30px_80px_-56px_rgba(2,6,23,0.98)] dark:focus-within:border-sky-400/40 dark:focus-within:bg-slate-900/96";
+  const isPhoneLayout = layout === "phone";
+  const textareaMinHeight = isPhoneLayout ? 208 : 136;
+  const textareaMaxHeight = isPhoneLayout ? 420 : 300;
+  const containerClassName = isPhoneLayout
+    ? isRewriteEmphasized
+      ? "rounded-[28px] border border-sky-200/80 bg-white px-4 py-4 shadow-[0_26px_80px_-56px_rgba(14,116,144,0.5)] ring-1 ring-sky-100/80 backdrop-blur-xl transition-[border-color,box-shadow,background-color,transform] duration-200 focus-within:border-sky-300 focus-within:shadow-[0_28px_86px_-58px_rgba(2,132,199,0.48)] dark:border-sky-500/30 dark:bg-slate-900/92 dark:ring-sky-500/10 dark:focus-within:border-sky-400/60 dark:focus-within:bg-slate-900/98"
+      : "rounded-[28px] border border-slate-200/80 bg-white/96 px-4 py-4 shadow-[0_28px_80px_-52px_rgba(15,23,42,0.55)] backdrop-blur-xl transition-[border-color,box-shadow,background-color] duration-200 focus-within:border-slate-300 focus-within:bg-white dark:border-white/10 dark:bg-slate-900/92 dark:shadow-[0_30px_80px_-56px_rgba(2,6,23,0.98)] dark:focus-within:border-sky-400/40 dark:focus-within:bg-slate-900/96"
+    : isRewriteEmphasized
+      ? "rounded-[30px] border border-sky-200/80 bg-white px-4 py-4 shadow-[0_26px_80px_-56px_rgba(14,116,144,0.5)] ring-1 ring-sky-100/80 backdrop-blur-xl transition-[border-color,box-shadow,background-color,transform] duration-200 focus-within:border-sky-300 focus-within:shadow-[0_28px_86px_-58px_rgba(2,132,199,0.48)] dark:border-sky-500/30 dark:bg-slate-900/92 dark:ring-sky-500/10 dark:focus-within:border-sky-400/60 dark:focus-within:bg-slate-900/98"
+      : "rounded-[30px] border border-slate-200/80 bg-white/92 px-4 py-4 shadow-[0_28px_80px_-52px_rgba(15,23,42,0.55)] backdrop-blur-xl transition-[border-color,box-shadow,background-color] duration-200 focus-within:border-slate-300 focus-within:bg-white dark:border-white/10 dark:bg-slate-900/88 dark:shadow-[0_30px_80px_-56px_rgba(2,6,23,0.98)] dark:focus-within:border-sky-400/40 dark:focus-within:bg-slate-900/96";
   const voiceStatusMessage = isListening
     ? "Listening... click the mic again to stop."
     : speechSupport === "blocked"
@@ -88,10 +99,10 @@ export default function PracticeInputBar({
 
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(
-      Math.max(textarea.scrollHeight, 136),
-      300,
+      Math.max(textarea.scrollHeight, textareaMinHeight),
+      textareaMaxHeight,
     )}px`;
-  }, [value]);
+  }, [textareaMaxHeight, textareaMinHeight, value]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -318,7 +329,11 @@ export default function PracticeInputBar({
     <div className={`${containerClassName} sm:px-5 sm:py-5`}>
       <textarea
         aria-label="Write your answer"
-        className="min-h-[136px] w-full resize-none overflow-y-auto bg-transparent text-[15px] leading-7 text-slate-900 outline-none placeholder:text-slate-400/90 dark:text-white dark:placeholder:text-slate-500"
+        className={`w-full resize-none overflow-y-auto bg-transparent outline-none placeholder:text-slate-400/90 dark:text-white dark:placeholder:text-slate-500 ${
+          isPhoneLayout
+            ? "min-h-[208px] text-base leading-7 text-slate-900"
+            : "min-h-[136px] text-[15px] leading-7 text-slate-900"
+        }`}
         id="practice-composer"
         onChange={(event) => onValueChange(event.target.value)}
         onKeyDown={handleKeyDown}
@@ -331,9 +346,11 @@ export default function PracticeInputBar({
 
       <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0 flex-1 space-y-1">
-          <div className="text-[11px] font-medium text-slate-400 dark:text-slate-500">
-            Ctrl+Enter
-          </div>
+          {showInlineActions ? (
+            <div className="text-[11px] font-medium text-slate-400 dark:text-slate-500">
+              Ctrl+Enter
+            </div>
+          ) : null}
 
           {footerNote ? (
             <div className="text-[11px] font-medium text-sky-700 dark:text-sky-200">
@@ -349,7 +366,7 @@ export default function PracticeInputBar({
         </div>
 
         <div className="flex items-center gap-2">
-          {secondaryActionLabel ? (
+          {showInlineActions && secondaryActionLabel ? (
             <button
               aria-label={secondaryActionAriaLabel ?? secondaryActionLabel}
               className="inline-flex min-h-11 items-center justify-center rounded-full border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:text-white dark:disabled:border-slate-800 dark:disabled:bg-slate-900 dark:disabled:text-slate-600"
@@ -384,16 +401,18 @@ export default function PracticeInputBar({
             />
           </button>
 
-          <button
-            aria-label={submitAriaLabel}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-slate-950 text-white shadow-[0_14px_30px_-20px_rgba(15,23,42,0.8)] transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-100 dark:disabled:bg-slate-800 dark:disabled:text-slate-500"
-            disabled={isSubmitDisabled}
-            onClick={handleSubmit}
-            type="button"
-          >
-            <span className="sr-only">{submitAriaLabel}</span>
-            <ArrowUpIcon className="h-[18px] w-[18px]" />
-          </button>
+          {showInlineActions ? (
+            <button
+              aria-label={submitAriaLabel}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-slate-950 text-white shadow-[0_14px_30px_-20px_rgba(15,23,42,0.8)] transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-100 dark:disabled:bg-slate-800 dark:disabled:text-slate-500"
+              disabled={isSubmitDisabled}
+              onClick={handleSubmit}
+              type="button"
+            >
+              <span className="sr-only">{submitAriaLabel}</span>
+              <ArrowUpIcon className="h-[18px] w-[18px]" />
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

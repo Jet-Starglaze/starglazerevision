@@ -155,3 +155,117 @@ test("only explicit traceable short-response evidence is rewarded", () => {
     },
   ]);
 });
+
+test("explicit list wording recovers an absent plasma carbon-dioxide point", () => {
+  const input = createPreparedMarkingInput({
+    answerText:
+      "plasma carries glucose and urea and hormones and most carbon dioxide",
+    marks: 4,
+    rubricPoints: [
+      "Plasma carries glucose",
+      "Plasma carries urea",
+      "Plasma carries hormones",
+      "Plasma carries most carbon dioxide",
+    ],
+  });
+  const sanitizedResponse = sanitizePointsModeResponse(
+    {
+      rubricAssessment: [
+        {
+          pointText: "Plasma carries glucose",
+          status: "present",
+          evidence: '"plasma carries glucose"',
+        },
+        {
+          pointText: "Plasma carries urea",
+          status: "present",
+          evidence: '"urea"',
+        },
+        {
+          pointText: "Plasma carries hormones",
+          status: "present",
+          evidence: '"hormones"',
+        },
+        {
+          pointText: "Plasma carries most carbon dioxide",
+          status: "absent",
+          evidence: "",
+        },
+      ],
+      feedback: {
+        nextStep: "Add the remaining plasma transport point.",
+      },
+    },
+    input,
+  );
+
+  assert.equal(
+    computePointsModeScore(
+      sanitizedResponse.rubricAssessment,
+      input.marks,
+    ),
+    4,
+  );
+  assert.deepEqual(sanitizedResponse.rubricAssessment[3], {
+    pointText: "Plasma carries most carbon dioxide",
+    status: "present",
+    evidence:
+      '"plasma carries glucose and urea and hormones and most carbon dioxide"',
+  });
+});
+
+test("recovery does not award a plasma carbon-dioxide point when 'most' is missing", () => {
+  const input = createPreparedMarkingInput({
+    answerText: "plasma carries glucose and urea and hormones and carbon dioxide",
+    marks: 4,
+    rubricPoints: [
+      "Plasma carries glucose",
+      "Plasma carries urea",
+      "Plasma carries hormones",
+      "Plasma carries most carbon dioxide",
+    ],
+  });
+  const sanitizedResponse = sanitizePointsModeResponse(
+    {
+      rubricAssessment: [
+        {
+          pointText: "Plasma carries glucose",
+          status: "present",
+          evidence: '"plasma carries glucose"',
+        },
+        {
+          pointText: "Plasma carries urea",
+          status: "present",
+          evidence: '"urea"',
+        },
+        {
+          pointText: "Plasma carries hormones",
+          status: "present",
+          evidence: '"hormones"',
+        },
+        {
+          pointText: "Plasma carries most carbon dioxide",
+          status: "absent",
+          evidence: "",
+        },
+      ],
+      feedback: {
+        nextStep: "Add the remaining plasma transport point.",
+      },
+    },
+    input,
+  );
+
+  assert.equal(
+    computePointsModeScore(
+      sanitizedResponse.rubricAssessment,
+      input.marks,
+    ),
+    3,
+  );
+  assert.deepEqual(sanitizedResponse.rubricAssessment[3], {
+    pointText: "Plasma carries most carbon dioxide",
+    status: "absent",
+    evidence: "",
+  });
+});

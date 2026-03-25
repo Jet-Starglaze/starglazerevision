@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   useCallback,
   useEffect,
@@ -7,9 +8,11 @@ import {
   useMemo,
   useRef,
   useState,
+  type RefObject,
   type ReactNode,
 } from "react";
 import Breadcrumbs from "@/components/breadcrumbs";
+import DesktopSidebarToggle from "@/components/practice/desktop-sidebar-toggle";
 import PracticeInputBar from "@/components/practice/practice-input-bar";
 import PracticeSessionPanel from "@/components/practice/practice-session-panel";
 import { formatRubricPointDisplayText } from "@/lib/marking/rubric-display";
@@ -20,12 +23,14 @@ import {
   isStuckPracticeAnswer,
   MAX_PRACTICE_HINT_LEVEL,
   type PracticeHintLevel,
+  type PracticeReviewState,
 } from "@/lib/practice-guidance";
 import type {
   ApiErrorResponse,
   GenerateQuestionSelectionStrategy,
   GenerateQuestionResponse,
   MarkAnswerResponse,
+  PracticeReviewSource,
 } from "@/lib/mock-biology-practice-api";
 import {
   isPracticeQuestionCommandWord,
@@ -48,6 +53,7 @@ type PracticeWorkspaceShellProps = {
   selectionKey: string;
   selectedSubtopicIds: number[];
   selectedSubtopics: WorkspaceSelectedSubtopic[];
+  isPhoneLayout: boolean;
   isSessionPanelOpen: boolean;
   onCloseSessionPanel: () => void;
   onOpenSessionPanel: () => void;
@@ -116,6 +122,8 @@ const MARKING_PROGRESS_MESSAGES = [
 ] as const;
 const MARKING_PROGRESS_INTERVAL_MS = 1200;
 const ATTEMPT_REVEAL_DELAY_MS = 300;
+const PHONE_STICKY_BAR_CLEARANCE = "calc(env(safe-area-inset-bottom, 0px) + 9rem)";
+const SHOULD_LOG_CLIENT_MARKING = process.env.NODE_ENV === "development";
 
 export default function PracticeWorkspaceShell({
   subjectName,
@@ -123,6 +131,7 @@ export default function PracticeWorkspaceShell({
   selectionKey,
   selectedSubtopicIds,
   selectedSubtopics,
+  isPhoneLayout,
   isSessionPanelOpen,
   onCloseSessionPanel,
   onOpenSessionPanel,
@@ -157,6 +166,8 @@ export default function PracticeWorkspaceShell({
   const [isDesktopSessionPanelCollapsed, setIsDesktopSessionPanelCollapsed] =
     useState(false);
   const [composerFocusSequence, setComposerFocusSequence] = useState(0);
+  const [mobileActionBarOffset, setMobileActionBarOffset] = useState(0);
+  const [isPhoneHistoryExpanded, setIsPhoneHistoryExpanded] = useState(false);
   const centerScrollContainerRef = useRef<HTMLDivElement>(null);
   const previousSelectionKeyRef = useRef(selectionKey);
   const sessionRequestTokenRef = useRef(0);
@@ -166,8 +177,18 @@ export default function PracticeWorkspaceShell({
     useRef<PrefetchedNextQuestionRequest | null>(null);
   const currentPrefetchSlotKeyRef = useRef("");
   const attemptRevealTimeoutIdsRef = useRef<number[]>([]);
+  const sessionThreadsRef = useRef<SessionThread[]>(sessionThreads);
+
+  sessionThreadsRef.current = sessionThreads;
 
   const activeThread = getActiveThread(sessionThreads);
+  const archivedThreads = useMemo(
+    () =>
+      sessionThreads.filter(
+        (thread) => thread.stage === "complete" || thread.stage === "skipped",
+      ),
+    [sessionThreads],
+  );
   const currentQuestion = activeThread?.question ?? null;
   const currentQuestionId = currentQuestion?.questionId ?? null;
   const sessionQuestionIds = useMemo(
@@ -230,6 +251,13 @@ export default function PracticeWorkspaceShell({
   const pendingReviewProgressMessage = pendingAnswerReview
     ? getMarkingProgressMessage(answerReviewElapsedMs)
     : null;
+  const activeThreadNumber = activeThread
+    ? getThreadNumber(sessionThreads, activeThread.threadId)
+    : null;
+  const shouldShowPhoneStickyActionBar =
+    isPhoneLayout &&
+    activeThread !== null &&
+    isComposerVisibleForStage(activeThread.stage);
   const hasValidPrefetchedNextQuestion = isPrefetchedQuestionSlotValid(
     prefetchedNextQuestion,
     prefetchSlotKey,
@@ -309,6 +337,7 @@ export default function PracticeWorkspaceShell({
       ...current,
       [threadId]: false,
     }));
+    setComposerFocusSequence((current) => current + 1);
   }
 
   function consumePrefetchedNextQuestionIfValid() {
@@ -348,6 +377,43 @@ export default function PracticeWorkspaceShell({
       window.clearInterval(intervalId);
     };
   }, [answerReviewStartedAt]);
+
+  useEffect(() => {
+    if (!isPhoneLayout) {
+      setMobileActionBarOffset(0);
+      return;
+    }
+
+    const visualViewport = window.visualViewport;
+    const updateMobileActionBarOffset = () => {
+      const nextOffset = visualViewport
+        ? Math.max(
+            Math.round(
+              window.innerHeight -
+                visualViewport.height -
+                visualViewport.offsetTop,
+            ),
+            0,
+          )
+        : 0;
+
+      setMobileActionBarOffset((current) =>
+        current === nextOffset ? current : nextOffset,
+      );
+    };
+
+    updateMobileActionBarOffset();
+
+    window.addEventListener("resize", updateMobileActionBarOffset);
+    visualViewport?.addEventListener("resize", updateMobileActionBarOffset);
+    visualViewport?.addEventListener("scroll", updateMobileActionBarOffset);
+
+    return () => {
+      window.removeEventListener("resize", updateMobileActionBarOffset);
+      visualViewport?.removeEventListener("resize", updateMobileActionBarOffset);
+      visualViewport?.removeEventListener("scroll", updateMobileActionBarOffset);
+    };
+  }, [isPhoneLayout]);
 
   useEffect(() => {
     return () => {
@@ -395,6 +461,7 @@ export default function PracticeWorkspaceShell({
     setAnswerReviewStartedAt(null);
     setAnswerReviewElapsedMs(0);
     setIsDesktopSessionPanelCollapsed(false);
+    setIsPhoneHistoryExpanded(false);
     setComposerFocusSequence(0);
 
     if (resetControls) {
@@ -717,6 +784,10 @@ export default function PracticeWorkspaceShell({
     const trimmedAnswer = answerDraft.trim();
 
     if (!trimmedAnswer) {
+      logPracticeMarkingEvent("submit_blocked_empty_answer", {
+        generatedQuestionId: Number(activeThread.question.questionId),
+        threadId: activeThread.threadId,
+      });
       setAnswerError("Answer text is required.");
 
       if (activeThread) {
@@ -729,31 +800,56 @@ export default function PracticeWorkspaceShell({
       return;
     }
 
-    const nextAttemptNumber = getNextAttemptNumber(activeThread);
+    const submittedThreadId = activeThread.threadId;
+    const submittedAttemptNumber = getNextAttemptNumber(activeThread);
+    const submittedAnswer = trimmedAnswer;
+    const generatedQuestionId = Number(activeThread.question.questionId);
+    const isStuckAnswer = isStuckPracticeAnswer(trimmedAnswer);
     const requestToken = sessionRequestTokenRef.current;
+    const requestPayload = {
+      generatedQuestionId,
+      answerText: submittedAnswer,
+      attemptNumber: submittedAttemptNumber,
+    };
+
+    logPracticeMarkingEvent("submit_start", {
+      answerChars: submittedAnswer.length,
+      answerText: submittedAnswer,
+      attemptNumber: submittedAttemptNumber,
+      generatedQuestionId,
+      isStuckAnswer,
+      threadId: submittedThreadId,
+    });
 
     setAnswerError(null);
     setGenerationError(null);
     setIsMarkingAnswer(true);
     setAnswerReviewElapsedMs(0);
     setPendingAnswerReview({
-      threadId: activeThread.threadId,
-      attemptNumber: nextAttemptNumber,
-      submittedAnswer: trimmedAnswer,
+      threadId: submittedThreadId,
+      attemptNumber: submittedAttemptNumber,
+      submittedAnswer,
     });
     setAnswerReviewStartedAt(Date.now());
 
     try {
+      logPracticeMarkingEvent("route_request", {
+        answerChars: submittedAnswer.length,
+        answerText: submittedAnswer,
+        attemptNumber: submittedAttemptNumber,
+        generatedQuestionId,
+        isStuckAnswer,
+        markingMode: "points",
+        method: "POST",
+        threadId: submittedThreadId,
+        url: "/api/mark-answer",
+      });
       const response = await fetch("/api/mark-answer", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          generatedQuestionId: Number(activeThread.question.questionId),
-          answerText: trimmedAnswer,
-          attemptNumber: nextAttemptNumber,
-        }),
+        body: JSON.stringify(requestPayload),
       });
       const body = await readResponseBody(response);
 
@@ -761,10 +857,29 @@ export default function PracticeWorkspaceShell({
         return;
       }
 
+      logPracticeMarkingEvent("route_response", {
+        attemptNumber: submittedAttemptNumber,
+        generatedQuestionId,
+        ok: response.ok,
+        ...getMarkAnswerResponseLogSummary(body),
+        reviewSource: isMarkAnswerResponse(body) ? body.reviewSource : null,
+        score: isMarkAnswerResponse(body) ? body.score : null,
+        status: response.status,
+        threadId: submittedThreadId,
+        url: "/api/mark-answer",
+      });
+
       setPendingAnswerReview(null);
       setAnswerReviewStartedAt(null);
 
       if (!response.ok) {
+        logPracticeMarkingEvent("route_error_response", {
+          attemptNumber: submittedAttemptNumber,
+          error: getApiErrorMessage(body, "Could not review this answer right now."),
+          generatedQuestionId,
+          status: response.status,
+          threadId: submittedThreadId,
+        });
         setAnswerError(
           getApiErrorMessage(body, "Could not review this answer right now."),
         );
@@ -772,13 +887,33 @@ export default function PracticeWorkspaceShell({
       }
 
       if (!isMarkAnswerResponse(body)) {
+        logPracticeMarkingEvent("route_invalid_response_shape", {
+          attemptNumber: submittedAttemptNumber,
+          generatedQuestionId,
+          status: response.status,
+          threadId: submittedThreadId,
+        });
         setAnswerError("Could not review this answer right now.");
         return;
       }
 
+      if (body.reviewSource !== "ai_review") {
+        warnPracticeMarkingEvent("non_ai_review_received", {
+          fallbackReason:
+            body.reviewSource === "fallback_review"
+              ? body.fallbackReason
+              : null,
+          attemptNumber: submittedAttemptNumber,
+          generatedQuestionId,
+          reviewSource: body.reviewSource,
+          status: response.status,
+          threadId: submittedThreadId,
+        });
+      }
+
       const nextAttempt: PracticeAttempt = {
-        attemptNumber: nextAttemptNumber,
-        answer: trimmedAnswer,
+        attemptNumber: submittedAttemptNumber,
+        answer: submittedAnswer,
         feedback: body,
         isFeedbackCollapsed: false,
       };
@@ -787,14 +922,27 @@ export default function PracticeWorkspaceShell({
         body.score,
         body.maxScore,
       );
-      beginAttemptReveal(activeThread.threadId, nextAttemptNumber);
+      beginAttemptReveal(submittedThreadId, submittedAttemptNumber);
       setStuckPromptState((current) => ({
         ...current,
-        [activeThread.threadId]: isStuckPracticeAnswer(trimmedAnswer),
+        [submittedThreadId]: isStuckPracticeAnswer(submittedAnswer),
       }));
 
+      if (
+        !sessionThreadsRef.current.some(
+          (thread) => thread.threadId === submittedThreadId,
+        )
+      ) {
+        warnPracticeMarkingEvent("route_response_thread_missing", {
+          attemptNumber: submittedAttemptNumber,
+          generatedQuestionId,
+          threadId: submittedThreadId,
+        });
+        return;
+      }
+
       setSessionThreads((current) =>
-        updateActiveThread(current, (thread) => ({
+        updateThreadById(current, submittedThreadId, (thread) => ({
           ...thread,
           attempts: [
             ...thread.attempts.map((attempt) => ({
@@ -805,10 +953,11 @@ export default function PracticeWorkspaceShell({
           ],
           stage: completed ? "complete" : "improving",
           isCollapsed: completed ? true : thread.isCollapsed,
-        })),
+        })).threads,
       );
 
       if (!completed) {
+        setComposerFocusSequence((current) => current + 1);
         return;
       }
 
@@ -822,6 +971,12 @@ export default function PracticeWorkspaceShell({
       });
     } catch {
       if (requestToken === sessionRequestTokenRef.current) {
+        warnPracticeMarkingEvent("route_request_failed", {
+          attemptNumber: submittedAttemptNumber,
+          generatedQuestionId,
+          threadId: submittedThreadId,
+          url: "/api/mark-answer",
+        });
         setPendingAnswerReview(null);
         setAnswerReviewStartedAt(null);
         setAnswerError("Could not review this answer right now.");
@@ -926,10 +1081,248 @@ export default function PracticeWorkspaceShell({
     );
   }
 
+  if (isPhoneLayout) {
+    return (
+      <section className="relative flex min-h-full min-w-0 bg-slate-50 dark:bg-slate-950">
+        <div className="flex min-h-full min-w-0 flex-1 flex-col">
+          <div
+            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto"
+            ref={centerScrollContainerRef}
+          >
+            <header className="shrink-0 px-4 pb-4 pt-5">
+              <div className="mx-auto flex w-full max-w-[720px] flex-col items-center text-center">
+                <h1 className="text-[1.65rem] font-semibold tracking-tight text-slate-950 dark:text-white">
+                  Practice questions
+                </h1>
+                <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600 dark:text-slate-300">
+                  One question, one draft, one next improvement at a time.
+                </p>
+                <p className="mt-4 flex max-w-full items-center justify-center gap-2 overflow-hidden whitespace-nowrap text-xs font-medium text-slate-500 dark:text-slate-400">
+                  <Link
+                    className="truncate transition hover:text-sky-700 dark:hover:text-sky-200"
+                    href={`/subjects/${subjectSlug}`}
+                    prefetch
+                  >
+                    {subjectName}
+                  </Link>
+                  <span aria-hidden="true" className="text-slate-300 dark:text-slate-600">
+                    /
+                  </span>
+                  <span aria-current="page" className="truncate">
+                    Practice questions
+                  </span>
+                </p>
+              </div>
+            </header>
+
+            <div className="sticky top-0 z-20 border-y border-slate-200/80 bg-white/92 backdrop-blur-xl dark:border-slate-800/80 dark:bg-slate-950/92">
+              <div className="mx-auto flex w-full max-w-[720px] gap-2 px-4 py-3">
+                <button
+                  className={`${secondaryButtonClass} flex-1`}
+                  onClick={onOpenSidebar}
+                  type="button"
+                >
+                  Topics
+                </button>
+                <button
+                  className={`${secondaryButtonClass} flex-1`}
+                  onClick={onOpenSessionPanel}
+                  type="button"
+                >
+                  Settings
+                </button>
+              </div>
+            </div>
+
+            <div
+              className="mx-auto flex w-full max-w-[720px] flex-col gap-4 px-4 py-4"
+              style={{
+                paddingBottom: shouldShowPhoneStickyActionBar
+                  ? PHONE_STICKY_BAR_CLEARANCE
+                  : undefined,
+              }}
+            >
+              {sessionThreads.length === 0 ? (
+                <PracticeWorkspaceReadyState
+                  canGenerate={canGenerateQuestion}
+                  hasSelectedTopics={hasSelectedTopics}
+                  isGeneratingQuestion={isGeneratingQuestion}
+                  isPhoneLayout
+                  onGenerateQuestion={handleGenerateQuestion}
+                  selectedSubtopics={selectedSubtopics}
+                />
+              ) : (
+                <>
+                  {activeThread && activeThreadNumber !== null ? (
+                    <ActivePracticeThread
+                      answerDraft={answerDraft}
+                      answerError={answerError}
+                      attemptRevealState={attemptRevealState}
+                      answerReviewTimerLabel={answerReviewTimerLabel}
+                      composerFocusTrigger={composerFocusSequence}
+                      hintRevealCount={hintRevealState[activeThread.threadId] ?? 0}
+                      isMarkingAnswer={isMarkingAnswer}
+                      isPhoneLayout
+                      isSkippingQuestion={isSkippingQuestion}
+                      key={activeThread.threadId}
+                      onAnswerDraftChange={handleAnswerDraftChange}
+                      onRevealNextHint={() => revealNextHint(activeThread.threadId)}
+                      onSkipQuestion={handleSkipQuestion}
+                      onSubmitAnswer={handleSubmitAnswer}
+                      onToggleAttemptFeedbackCollapse={(attemptNumber) =>
+                        toggleAttemptFeedbackCollapse(
+                          activeThread.threadId,
+                          attemptNumber,
+                        )
+                      }
+                      pendingAnswerReview={pendingAnswerReview}
+                      pendingReviewProgressMessage={pendingReviewProgressMessage}
+                      shouldOfferHint={
+                        stuckPromptState[activeThread.threadId] ?? false
+                      }
+                      thread={activeThread}
+                      threadNumber={activeThreadNumber}
+                    />
+                  ) : null}
+
+                  {isGeneratingNextThread ? (
+                    <ThreadLoadingState
+                      nextThreadNumber={sessionThreads.length + 1}
+                    />
+                  ) : null}
+
+                  {generationError && activeThread === null && !isSessionComplete ? (
+                    <ThreadGenerationError
+                      message={generationError}
+                      onRetry={handleGenerateQuestion}
+                    />
+                  ) : null}
+
+                  {isSessionComplete ? (
+                    <SessionCompleteSummary
+                      completedQuestionCount={completedQuestionCount}
+                      onResetSession={resetSession}
+                      sessionLength={sessionLength}
+                    />
+                  ) : null}
+
+                  {archivedThreads.length > 0 ? (
+                    <section className="rounded-[24px] border border-slate-200 bg-white px-4 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                      <button
+                        aria-expanded={isPhoneHistoryExpanded}
+                        className="flex w-full items-center justify-between gap-3 text-left"
+                        onClick={() =>
+                          setIsPhoneHistoryExpanded((current) => !current)
+                        }
+                        type="button"
+                      >
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                            Session history
+                          </p>
+                          <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
+                            Review completed and skipped questions without
+                            interrupting the current flow.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
+                            {archivedThreads.length}
+                          </span>
+                          <ThreadDisclosureIcon
+                            className={`h-4 w-4 text-slate-500 transition-transform duration-300 ease-out motion-reduce:transition-none dark:text-slate-400 ${
+                              isPhoneHistoryExpanded ? "rotate-0" : "-rotate-90"
+                            }`}
+                          />
+                        </div>
+                      </button>
+
+                      {isPhoneHistoryExpanded ? (
+                        <div className="mt-4 space-y-4 border-t border-slate-200 pt-4 dark:border-slate-800">
+                          {archivedThreads.map((thread) => (
+                            <ArchivedPracticeThread
+                              attemptRevealState={attemptRevealState}
+                              key={thread.threadId}
+                              onToggleAttemptFeedbackCollapse={(attemptNumber) =>
+                                toggleAttemptFeedbackCollapse(
+                                  thread.threadId,
+                                  attemptNumber,
+                                )
+                              }
+                              onToggleCollapse={() =>
+                                toggleArchivedThread(thread.threadId)
+                              }
+                              thread={thread}
+                              threadNumber={getThreadNumber(
+                                sessionThreads,
+                                thread.threadId,
+                              )}
+                            />
+                          ))}
+                        </div>
+                      ) : null}
+                    </section>
+                  ) : null}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {shouldShowPhoneStickyActionBar && activeThread ? (
+          <PhoneStickyActionBar
+            isSkippingQuestion={isSkippingQuestion}
+            keyboardOffset={mobileActionBarOffset}
+            onSkipQuestion={handleSkipQuestion}
+            onSubmitAnswer={handleSubmitAnswer}
+            submitDisabled={
+              isMarkingAnswer || isSkippingQuestion || answerDraft.trim().length === 0
+            }
+            submitLabel={
+              isMarkingAnswer
+                ? "Reviewing answer"
+                : activeThread.attempts.length > 0
+                  ? `Submit attempt ${getNextAttemptNumber(activeThread)}`
+                  : "Submit answer"
+            }
+          />
+        ) : null}
+
+        <MobileSessionDrawer
+          isOpen={isSessionPanelOpen}
+          isPhoneLayout
+          onClose={onCloseSessionPanel}
+        >
+          <PracticeSessionPanel
+            answerDraft={answerDraft}
+            canReset={canResetSession}
+            currentQuestion={currentQuestion}
+            generateButtonLabel={primaryActionLabel}
+            generationError={generationError}
+            isDeemphasized={isSessionInProgress}
+            isGeneratingQuestion={isGeneratingQuestion}
+            isSessionComplete={isSessionComplete}
+            onClose={onCloseSessionPanel}
+            onGenerateQuestion={handleGenerateQuestion}
+            onQuestionFilterModeChange={handleQuestionFilterModeChange}
+            onResetSession={resetSession}
+            onSessionLengthChange={handleSessionLengthChange}
+            presentation="sheet"
+            progressLabel={sessionProgressLabel}
+            progressMessage={sessionProgressMessage}
+            questionFilterMode={questionFilterMode}
+            selectedSubtopics={selectedSubtopics}
+            sessionLength={sessionLength}
+          />
+        </MobileSessionDrawer>
+      </section>
+    );
+  }
+
   return (
     <section className="relative flex min-h-full min-w-0 bg-slate-50 dark:bg-slate-950 xl:h-full xl:min-h-0 xl:overflow-hidden">
       <div
-        className={`grid min-h-full min-w-0 flex-1 ${desktopLayoutClass} xl:h-full xl:min-h-0 xl:transition-[grid-template-columns] xl:duration-200 xl:ease-out motion-reduce:transition-none`}
+        className={`grid min-h-full min-w-0 flex-1 ${desktopLayoutClass} xl:h-full xl:min-h-0`}
       >
         <div className="flex min-h-0 min-w-0 flex-col bg-slate-50 dark:bg-slate-950">
           <div
@@ -996,11 +1389,11 @@ export default function PracticeWorkspaceShell({
 
               {sessionThreads.length === 0 ? (
                 <PracticeWorkspaceReadyState
+                  canGenerate={canGenerateQuestion}
                   hasSelectedTopics={hasSelectedTopics}
                   isGeneratingQuestion={isGeneratingQuestion}
                   onGenerateQuestion={handleGenerateQuestion}
                   selectedSubtopics={selectedSubtopics}
-                  canGenerate={canGenerateQuestion}
                 />
               ) : (
                 <div className="space-y-6 pb-4 sm:space-y-7 sm:pb-6">
@@ -1028,6 +1421,7 @@ export default function PracticeWorkspaceShell({
                         composerFocusTrigger={composerFocusSequence}
                         hintRevealCount={hintRevealState[thread.threadId] ?? 0}
                         isMarkingAnswer={isMarkingAnswer}
+                        isPhoneLayout={false}
                         isSkippingQuestion={isSkippingQuestion}
                         key={thread.threadId}
                         onAnswerDraftChange={handleAnswerDraftChange}
@@ -1041,10 +1435,10 @@ export default function PracticeWorkspaceShell({
                           )
                         }
                         pendingAnswerReview={pendingAnswerReview}
+                        pendingReviewProgressMessage={pendingReviewProgressMessage}
                         shouldOfferHint={stuckPromptState[thread.threadId] ?? false}
                         thread={thread}
                         threadNumber={index + 1}
-                        pendingReviewProgressMessage={pendingReviewProgressMessage}
                       />
                     ),
                   )}
@@ -1079,11 +1473,7 @@ export default function PracticeWorkspaceShell({
           <div className="relative h-full overflow-hidden">
             <div
               aria-hidden={!isDesktopSessionPanelCollapsed}
-              className={`absolute inset-0 transition-[transform,opacity] duration-200 ease-out motion-reduce:transition-none ${
-                isDesktopSessionPanelCollapsed
-                  ? "translate-x-0 opacity-100"
-                  : "translate-x-5 opacity-0 pointer-events-none"
-              }`}
+              className="absolute inset-y-0 right-0 z-0 w-[3.75rem]"
               inert={!isDesktopSessionPanelCollapsed}
             >
               <DesktopSessionRail
@@ -1093,10 +1483,10 @@ export default function PracticeWorkspaceShell({
 
             <div
               aria-hidden={isDesktopSessionPanelCollapsed}
-              className={`absolute inset-0 transition-[transform,opacity] duration-200 ease-out motion-reduce:transition-none ${
+              className={`absolute inset-y-0 right-0 z-10 w-[320px] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform motion-reduce:transition-none ${
                 isDesktopSessionPanelCollapsed
-                  ? "translate-x-5 opacity-0 pointer-events-none"
-                  : "translate-x-0 opacity-100"
+                  ? "translate-x-full pointer-events-none"
+                  : "translate-x-0"
               }`}
               inert={isDesktopSessionPanelCollapsed}
             >
@@ -1127,6 +1517,7 @@ export default function PracticeWorkspaceShell({
 
       <MobileSessionDrawer
         isOpen={isSessionPanelOpen}
+        isPhoneLayout={false}
         onClose={onCloseSessionPanel}
       >
         <PracticeSessionPanel
@@ -1223,6 +1614,7 @@ type PracticeWorkspaceReadyStateProps = {
   hasSelectedTopics: boolean;
   canGenerate: boolean;
   isGeneratingQuestion: boolean;
+  isPhoneLayout?: boolean;
   selectedSubtopics: WorkspaceSelectedSubtopic[];
   onGenerateQuestion: () => void;
 };
@@ -1231,6 +1623,7 @@ function PracticeWorkspaceReadyState({
   hasSelectedTopics,
   canGenerate,
   isGeneratingQuestion,
+  isPhoneLayout = false,
   selectedSubtopics,
   onGenerateQuestion,
 }: PracticeWorkspaceReadyStateProps) {
@@ -1256,7 +1649,9 @@ function PracticeWorkspaceReadyState({
             ? `${selectedTopicLabel} ${
                 selectedTopicCount === 1 ? "is" : "are"
               } ready. Generate a question to start the answer-and-improve flow.`
-            : "Use the syllabus rail to choose modules, topics, or subtopics first, then come back here to generate a question."}
+            : isPhoneLayout
+              ? "Use Topics above to choose modules, topics, or subtopics first, then come back here to generate a question."
+              : "Use the syllabus rail to choose modules, topics, or subtopics first, then come back here to generate a question."}
         </p>
 
         {hasSelectedTopics ? (
@@ -1286,6 +1681,7 @@ type ActivePracticeThreadProps = {
   composerFocusTrigger: number;
   hintRevealCount: number;
   isMarkingAnswer: boolean;
+  isPhoneLayout: boolean;
   isSkippingQuestion: boolean;
   onAnswerDraftChange: (value: string) => void;
   onRevealNextHint: () => void;
@@ -1307,6 +1703,7 @@ function ActivePracticeThread({
   composerFocusTrigger,
   hintRevealCount,
   isMarkingAnswer,
+  isPhoneLayout,
   isSkippingQuestion,
   onAnswerDraftChange,
   onRevealNextHint,
@@ -1363,6 +1760,14 @@ function ActivePracticeThread({
       : hintRevealCount === 0
         ? "Need a hint?"
         : "Show next hint";
+  const nextHintLabel =
+    hintRevealCount === 0
+      ? "Need help starting?"
+      : hintRevealCount === 1
+        ? "Show more help"
+        : hintRevealCount === 2
+          ? "Show example sentence"
+          : null;
   const skipActionLabel = isSkippingQuestion ? "Skipping..." : "Skip question";
   const activePendingAnswerReview =
     pendingAnswerReview?.threadId === thread.threadId ? pendingAnswerReview : null;
@@ -1384,10 +1789,47 @@ function ActivePracticeThread({
     });
   }, [composerFocusTrigger, shouldShowComposer]);
 
+  if (isPhoneLayout) {
+    return (
+      <PhoneActivePracticeThreadView
+        activePendingAnswerReview={activePendingAnswerReview}
+        answerDraft={answerDraft}
+        answerError={answerError}
+        answerReviewTimerLabel={answerReviewTimerLabel}
+        attemptRevealState={attemptRevealState}
+        composerFocusTrigger={composerFocusTrigger}
+        composerRegionRef={composerRegionRef}
+        isMarkingAnswer={isMarkingAnswer}
+        isSkippingQuestion={isSkippingQuestion}
+        latestAttempt={latestAttempt}
+        latestReviewState={latestReviewState}
+        nextHintLabel={nextHintLabel}
+        onAnswerDraftChange={onAnswerDraftChange}
+        onRevealNextHint={onRevealNextHint}
+        onSkipQuestion={onSkipQuestion}
+        onSubmitAnswer={onSubmitAnswer}
+        onToggleAttemptFeedbackCollapse={onToggleAttemptFeedbackCollapse}
+        pendingReviewProgressMessage={pendingReviewProgressMessage}
+        practiceHints={practiceHints}
+        revealedHints={revealedHints}
+        shouldOfferHint={shouldOfferHint}
+        shouldShowComposer={shouldShowComposer}
+        skipActionLabel={skipActionLabel}
+        submitAriaLabel={submitAriaLabel}
+        thread={thread}
+        threadNumber={threadNumber}
+      />
+    );
+  }
+
   return (
     <article className="space-y-5 rounded-[30px] border border-slate-200 bg-white px-4 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:px-5 sm:py-5">
       <QuestionThreadHeader
+        hintButtonLabel={hintButtonLabel}
+        isHintButtonDisabled={hintRevealCount >= MAX_PRACTICE_HINT_LEVEL}
         isCondensed={thread.attempts.length > 0 || isImproving}
+        isPhoneLayout={false}
+        onRevealNextHint={onRevealNextHint}
         question={thread.question}
         threadNumber={threadNumber}
       />
@@ -1444,15 +1886,15 @@ function ActivePracticeThread({
             />
           ) : null}
 
-          <PracticeHintPanel
-            hintButtonLabel={hintButtonLabel}
-            hints={revealedHints}
-            isDisabled={hintRevealCount >= MAX_PRACTICE_HINT_LEVEL}
-            onRevealNextHint={onRevealNextHint}
-            shouldOfferHint={
-              shouldOfferHint && hintRevealCount < MAX_PRACTICE_HINT_LEVEL
-            }
-          />
+          {revealedHints.length > 0 ||
+          (shouldOfferHint && hintRevealCount < MAX_PRACTICE_HINT_LEVEL) ? (
+            <PracticeHintPanel
+              hints={revealedHints}
+              shouldOfferHint={
+                shouldOfferHint && hintRevealCount < MAX_PRACTICE_HINT_LEVEL
+              }
+            />
+          ) : null}
 
           <PracticeInputBar
             footerNote={answerReviewTimerLabel}
@@ -1473,6 +1915,468 @@ function ActivePracticeThread({
         </div>
       ) : null}
     </article>
+  );
+}
+
+type PhoneActivePracticeThreadViewProps = {
+  thread: SessionThread;
+  threadNumber: number;
+  answerDraft: string;
+  answerError: string | null;
+  answerReviewTimerLabel: string | null;
+  attemptRevealState: AttemptRevealStateMap;
+  composerFocusTrigger: number;
+  composerRegionRef: RefObject<HTMLDivElement | null>;
+  isMarkingAnswer: boolean;
+  isSkippingQuestion: boolean;
+  latestAttempt: PracticeAttempt | null;
+  latestReviewState: PracticeReviewState | null;
+  nextHintLabel: string | null;
+  onAnswerDraftChange: (value: string) => void;
+  onRevealNextHint: () => void;
+  onSkipQuestion: () => void;
+  onSubmitAnswer: () => void;
+  onToggleAttemptFeedbackCollapse: (attemptNumber: number) => void;
+  pendingReviewProgressMessage: string | null;
+  practiceHints: PracticeHintLevel[];
+  revealedHints: PracticeHintLevel[];
+  shouldOfferHint: boolean;
+  shouldShowComposer: boolean;
+  skipActionLabel: string;
+  submitAriaLabel: string;
+  activePendingAnswerReview: PendingAnswerReview | null;
+};
+
+function PhoneActivePracticeThreadView({
+  thread,
+  threadNumber,
+  answerDraft,
+  answerError,
+  answerReviewTimerLabel,
+  attemptRevealState,
+  composerFocusTrigger,
+  composerRegionRef,
+  isMarkingAnswer,
+  isSkippingQuestion,
+  latestAttempt,
+  latestReviewState,
+  nextHintLabel,
+  onAnswerDraftChange,
+  onRevealNextHint,
+  onSkipQuestion,
+  onSubmitAnswer,
+  onToggleAttemptFeedbackCollapse,
+  pendingReviewProgressMessage,
+  practiceHints,
+  revealedHints,
+  shouldOfferHint,
+  shouldShowComposer,
+  skipActionLabel,
+  submitAriaLabel,
+  activePendingAnswerReview,
+}: PhoneActivePracticeThreadViewProps) {
+  const [isEarlierDraftsVisible, setIsEarlierDraftsVisible] = useState(false);
+  const currentAttemptRevealStage = latestAttempt
+    ? getAttemptRevealStage(
+        attemptRevealState,
+        thread.threadId,
+        latestAttempt.attemptNumber,
+      )
+    : "focused";
+  const earlierAttempts = activePendingAnswerReview
+    ? thread.attempts
+    : thread.attempts.slice(0, -1);
+  const canRevealMoreHints =
+    revealedHints.length < practiceHints.length && nextHintLabel !== null;
+
+  return (
+    <article className="space-y-4 rounded-[28px] border border-slate-200 bg-white px-4 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <QuestionThreadHeader
+        isCondensed={thread.attempts.length > 0}
+        isPhoneLayout
+        question={thread.question}
+        threadNumber={threadNumber}
+      />
+
+      {shouldShowComposer ? (
+        <div className="space-y-3" ref={composerRegionRef}>
+          {answerError ? (
+            <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+              {answerError}
+            </div>
+          ) : null}
+
+          <PracticeInputBar
+            footerNote={answerReviewTimerLabel}
+            focusTrigger={composerFocusTrigger}
+            isRewriteEmphasized={shouldShowComposer}
+            layout="phone"
+            onSecondaryAction={onSkipQuestion}
+            onSubmit={onSubmitAnswer}
+            onValueChange={onAnswerDraftChange}
+            secondaryActionAriaLabel={skipActionLabel}
+            secondaryActionDisabled={isMarkingAnswer || isSkippingQuestion}
+            secondaryActionLabel={skipActionLabel}
+            showInlineActions={false}
+            submitDisabled={
+              isMarkingAnswer || isSkippingQuestion || answerDraft.trim().length === 0
+            }
+            submitAriaLabel={submitAriaLabel}
+            value={answerDraft}
+          />
+        </div>
+      ) : null}
+
+      <PhonePracticeHintPanel
+        canRevealMoreHints={canRevealMoreHints}
+        hints={revealedHints}
+        nextHintLabel={nextHintLabel}
+        onRevealNextHint={onRevealNextHint}
+        shouldOfferHint={shouldOfferHint}
+      />
+
+      {activePendingAnswerReview && pendingReviewProgressMessage ? (
+        <PhonePendingReviewCard
+          attemptNumber={activePendingAnswerReview.attemptNumber}
+          progressMessage={pendingReviewProgressMessage}
+        />
+      ) : latestAttempt && latestReviewState ? (
+        <PhoneCurrentReviewCard
+          attempt={latestAttempt}
+          nextDraftTarget={latestReviewState.nextDraftTarget}
+          priorityMissingItems={latestReviewState.revealedMissing}
+          revealStage={currentAttemptRevealStage}
+          thread={thread}
+        />
+      ) : null}
+
+      {earlierAttempts.length > 0 ? (
+        <section className="rounded-[22px] border border-slate-200 bg-slate-50/85 px-4 py-4 dark:border-slate-800 dark:bg-slate-950/65">
+          <button
+            aria-expanded={isEarlierDraftsVisible}
+            className="flex w-full items-center justify-between gap-3 text-left"
+            onClick={() => setIsEarlierDraftsVisible((current) => !current)}
+            type="button"
+          >
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                Earlier drafts
+              </p>
+              <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
+                Reopen earlier attempts and feedback only when you need them.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-sm font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                {earlierAttempts.length}
+              </span>
+              <ThreadDisclosureIcon
+                className={`h-4 w-4 text-slate-500 transition-transform duration-300 ease-out motion-reduce:transition-none dark:text-slate-400 ${
+                  isEarlierDraftsVisible ? "rotate-0" : "-rotate-90"
+                }`}
+              />
+            </div>
+          </button>
+
+          {isEarlierDraftsVisible ? (
+            <div className="mt-4 space-y-4 border-t border-slate-200 pt-4 dark:border-slate-800">
+              {earlierAttempts.map((attempt) => (
+                <ThreadTurn
+                  attempt={attempt}
+                  key={attempt.attemptNumber}
+                  modelAnswer={thread.question.modelAnswer}
+                  onToggleFeedbackCollapse={() =>
+                    onToggleAttemptFeedbackCollapse(attempt.attemptNumber)
+                  }
+                  revealStage={getAttemptRevealStage(
+                    attemptRevealState,
+                    thread.threadId,
+                    attempt.attemptNumber,
+                  )}
+                />
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {latestReviewState &&
+      (latestReviewState.revealedMissing.length > 0 ||
+        latestReviewState.nextDraftTarget) ? (
+        <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
+          Keep rewriting in the same answer box above while the priority gaps stay
+          visible below.
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
+function PhonePracticeHintPanel({
+  hints,
+  shouldOfferHint,
+  canRevealMoreHints,
+  nextHintLabel,
+  onRevealNextHint,
+}: {
+  hints: PracticeHintLevel[];
+  shouldOfferHint: boolean;
+  canRevealMoreHints: boolean;
+  nextHintLabel: string | null;
+  onRevealNextHint: () => void;
+}) {
+  return (
+    <section
+      className={`rounded-[22px] border px-4 py-4 ${
+        shouldOfferHint
+          ? "border-amber-300 bg-amber-50 dark:border-amber-500/40 dark:bg-amber-500/10"
+          : "border-slate-200 bg-slate-50/85 dark:border-slate-800 dark:bg-slate-950/65"
+      }`}
+    >
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p
+              className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${
+                shouldOfferHint
+                  ? "text-amber-800 dark:text-amber-200"
+                  : "text-slate-500 dark:text-slate-400"
+              }`}
+            >
+              Hint support
+            </p>
+            <p
+              className={`mt-1 text-sm leading-6 ${
+                shouldOfferHint
+                  ? "text-amber-900 dark:text-amber-100"
+                  : "text-slate-600 dark:text-slate-300"
+              }`}
+            >
+              {shouldOfferHint
+                ? "Looks like you might be stuck. Reveal the next hint, then keep typing in the same answer box."
+                : "Reveal a structured hint only when you need a nudge."}
+            </p>
+          </div>
+
+          {canRevealMoreHints && nextHintLabel ? (
+            <button
+              className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:hover:border-sky-500 dark:hover:text-sky-200"
+              onClick={onRevealNextHint}
+              type="button"
+            >
+              {nextHintLabel}
+            </button>
+          ) : (
+            <span className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-3 py-1 text-sm font-medium text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+              All hints shown
+            </span>
+          )}
+        </div>
+
+        {hints.length > 0 ? (
+          <div className="max-h-64 space-y-3 overflow-y-auto pr-1">
+            {hints.map((hint) => (
+              <HintCard hint={hint} key={hint.level} />
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function PhonePendingReviewCard({
+  attemptNumber,
+  progressMessage,
+}: {
+  attemptNumber: number;
+  progressMessage: string;
+}) {
+  return (
+    <section className="space-y-4 rounded-[24px] border border-sky-200 bg-white px-4 py-4 shadow-sm dark:border-sky-500/30 dark:bg-slate-900">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700 dark:text-sky-200">
+            AI review
+          </p>
+          <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
+            Attempt {attemptNumber} is being checked now.
+          </p>
+        </div>
+        <span className="inline-flex items-center gap-2 rounded-full bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 dark:bg-sky-500/10 dark:text-sky-200">
+          <span
+            aria-hidden="true"
+            className="h-2 w-2 rounded-full bg-sky-500 animate-pulse"
+          />
+          In progress
+        </span>
+      </div>
+
+      <section className="review-shimmer rounded-[22px] border border-sky-200 bg-white/90 px-4 py-4 shadow-sm dark:border-sky-500/30 dark:bg-slate-900/85">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700 dark:text-sky-200">
+          AI review in progress
+        </p>
+        <p className="mt-3 text-xl font-semibold tracking-tight text-slate-950 dark:text-white">
+          {progressMessage}
+        </p>
+        <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">
+          Your score will appear first, followed by priority missing points and
+          the next draft target.
+        </p>
+      </section>
+
+      <ReviewRevealPlaceholder
+        description="Checking priority missing points..."
+        minHeightClass="min-h-[108px]"
+        title="Priority missing points"
+      />
+      <ReviewRevealPlaceholder
+        description="Preparing next draft target..."
+        minHeightClass="min-h-[96px]"
+        title="Next draft target"
+      />
+    </section>
+  );
+}
+
+function PhoneCurrentReviewCard({
+  attempt,
+  thread,
+  priorityMissingItems,
+  nextDraftTarget,
+  revealStage = "focused",
+}: {
+  attempt: PracticeAttempt;
+  thread: SessionThread;
+  priorityMissingItems: RubricAssessmentItem[];
+  nextDraftTarget: string | null;
+  revealStage?: AttemptRevealStage;
+}) {
+  const [isFullReviewVisible, setIsFullReviewVisible] = useState(false);
+  const [isModelAnswerVisible, setIsModelAnswerVisible] = useState(false);
+  const reviewState = useMemo(
+    () =>
+      derivePracticeReviewState({
+        rubricAssessment: attempt.feedback.rubricAssessment,
+        score: attempt.feedback.score,
+        maxScore: attempt.feedback.maxScore,
+      }),
+    [attempt.feedback],
+  );
+  const hasModelAnswer =
+    typeof thread.question.modelAnswer === "string" &&
+    thread.question.modelAnswer.trim().length > 0;
+  const offTopicPoints = attempt.feedback.feedback.offTopicPoints ?? [];
+  const hasSupplementaryReview =
+    reviewState.present.length > 0 ||
+    reviewState.partial.length > 0 ||
+    reviewState.absent.length > priorityMissingItems.length ||
+    offTopicPoints.length > 0 ||
+    hasModelAnswer;
+  const isFocusedFeedbackVisible = revealStage === "focused";
+
+  return (
+    <section className="space-y-4 rounded-[24px] border border-slate-200 bg-white px-4 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700 dark:text-sky-200">
+            Latest feedback
+          </p>
+          <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
+            Attempt {attempt.attemptNumber} is marked. Keep editing your answer
+            above and use this as the next target.
+          </p>
+        </div>
+        <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+          Score first
+        </span>
+      </div>
+
+      <div className="space-y-4">
+        <ReviewScoreSection feedback={attempt.feedback} isEmphasized />
+        <ReviewSourceNotice feedback={attempt.feedback} />
+        {isFocusedFeedbackVisible ? (
+          <>
+            <RubricAssessmentSection
+              emptyMessage={
+                reviewState.absent.length === 0
+                  ? "No priority missing points right now."
+                  : "No priority missing points revealed right now."
+              }
+              items={priorityMissingItems}
+              status="absent"
+              title="Priority missing points"
+            />
+            <NextDraftTargetSection
+              isEmphasized
+              nextStep={nextDraftTarget}
+            />
+          </>
+        ) : (
+          <>
+            <ReviewRevealPlaceholder
+              description="Preparing priority missing points..."
+              isEmphasized
+              minHeightClass="min-h-[108px]"
+              title="Priority missing points"
+            />
+            <ReviewRevealPlaceholder
+              description="Preparing next draft target..."
+              isEmphasized
+              minHeightClass="min-h-[96px]"
+              title="Next draft target"
+            />
+          </>
+        )}
+      </div>
+
+      {hasSupplementaryReview ? (
+        <div className="flex">
+          <button
+            aria-expanded={isFullReviewVisible}
+            className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-200 bg-white/80 px-3.5 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
+            onClick={() => setIsFullReviewVisible((current) => !current)}
+            type="button"
+          >
+            {isFullReviewVisible ? "Hide full review" : "Show full review"}
+          </button>
+        </div>
+      ) : null}
+
+      {isFullReviewVisible ? (
+        <div className="space-y-5 rounded-[24px] border border-slate-200/80 bg-white/85 px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+          <RubricAssessmentSection
+            emptyMessage="No mark points matched."
+            items={reviewState.present}
+            status="present"
+            title="Correct"
+          />
+          {reviewState.partial.length > 0 ? (
+            <RubricAssessmentSection
+              items={reviewState.partial}
+              status="partial"
+              title="Partial"
+            />
+          ) : null}
+          <RubricAssessmentSection
+            emptyMessage="No missing rubric points."
+            items={reviewState.absent}
+            status="absent"
+            title="All missing points"
+          />
+          {offTopicPoints.length > 0 ? (
+            <OffTopicContentSection offTopicPoints={offTopicPoints} />
+          ) : null}
+          {hasModelAnswer && thread.question.modelAnswer ? (
+            <ModelAnswerSection
+              isVisible={isModelAnswerVisible}
+              modelAnswer={thread.question.modelAnswer}
+              onToggle={() => setIsModelAnswerVisible((current) => !current)}
+            />
+          ) : null}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -1611,12 +2515,20 @@ type QuestionThreadHeaderProps = {
   question: GenerateQuestionResponse;
   threadNumber: number;
   isCondensed: boolean;
+  isPhoneLayout?: boolean;
+  hintButtonLabel?: string;
+  isHintButtonDisabled?: boolean;
+  onRevealNextHint?: () => void;
 };
 
 function QuestionThreadHeader({
   question,
   threadNumber,
   isCondensed,
+  isPhoneLayout = false,
+  hintButtonLabel = "Need a hint?",
+  isHintButtonDisabled = false,
+  onRevealNextHint,
 }: QuestionThreadHeaderProps) {
   return (
     <section className="rounded-[24px] border border-slate-200 bg-white/92 px-5 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/92 sm:px-6">
@@ -1636,7 +2548,11 @@ function QuestionThreadHeader({
 
           <p
             className={`max-w-4xl font-semibold tracking-tight text-slate-950 dark:text-white ${
-              isCondensed
+              isPhoneLayout
+                ? isCondensed
+                  ? "text-lg leading-8"
+                  : "text-xl leading-8"
+                : isCondensed
                 ? "text-lg leading-8 sm:text-xl sm:leading-9"
                 : "text-2xl leading-10 sm:text-[2rem] sm:leading-[1.45]"
             }`}
@@ -1645,10 +2561,20 @@ function QuestionThreadHeader({
           </p>
         </div>
 
-        <div className="shrink-0">
+        <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
           <span className="inline-flex rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
             {question.marks} marks
           </span>
+          {onRevealNextHint ? (
+            <button
+              className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-3.5 py-2 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-sky-300 hover:text-sky-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:hover:border-sky-500 dark:hover:text-sky-200 dark:disabled:border-slate-800 dark:disabled:bg-slate-900 dark:disabled:text-slate-600"
+              disabled={isHintButtonDisabled}
+              onClick={onRevealNextHint}
+              type="button"
+            >
+              {hintButtonLabel}
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -1694,9 +2620,10 @@ function ThreadTurn({
   const hasModelAnswer =
     typeof modelAnswer === "string" && modelAnswer.trim().length > 0;
   const offTopicPoints = attempt.feedback.feedback.offTopicPoints ?? [];
-  const feedbackToggleLabel = attempt.isFeedbackCollapsed
-    ? "Show AI review"
-    : "Hide AI review";
+  const feedbackToggleLabel = getReviewToggleLabel(
+    attempt.feedback.reviewSource,
+    attempt.isFeedbackCollapsed,
+  );
   const isFocusedFeedbackVisible = revealStage === "focused";
   const hasSupplementaryReview =
     reviewState.present.length > 0 ||
@@ -1707,6 +2634,7 @@ function ThreadTurn({
   const fullReviewToggleLabel = isFullReviewVisible
     ? "Hide full review"
     : "Show full review";
+  const reviewSourceLabel = getReviewSourceLabel(attempt.feedback.reviewSource);
 
   return (
     <div className="space-y-3.5">
@@ -1722,7 +2650,7 @@ function ThreadTurn({
 
       <ThreadBlock
         align="left"
-        caption={`AI review - Attempt ${attempt.attemptNumber}`}
+        caption={`${reviewSourceLabel} - Attempt ${attempt.attemptNumber}`}
         headerTrailing={
           <div className="flex flex-wrap items-center justify-end gap-2">
             <span className="inline-flex rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
@@ -1749,8 +2677,7 @@ function ThreadTurn({
         <div className="space-y-3">
           {attempt.isFeedbackCollapsed ? (
             <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
-              AI review hidden while you draft. Reopen it anytime if you want to
-              check the feedback again.
+              {getCollapsedReviewMessage(attempt.feedback.reviewSource)}
             </p>
           ) : null}
 
@@ -1773,6 +2700,7 @@ function ThreadTurn({
                   feedback={attempt.feedback}
                   isEmphasized={isGuidancePrimary}
                 />
+                <ReviewSourceNotice feedback={attempt.feedback} />
                 {isFocusedFeedbackVisible ? (
                   <>
                     <RubricAssessmentSection
@@ -1969,40 +2897,13 @@ function ReviewRevealPlaceholder({
 
 function PracticeHintPanel({
   hints,
-  hintButtonLabel,
-  isDisabled,
-  onRevealNextHint,
   shouldOfferHint,
 }: {
   hints: PracticeHintLevel[];
-  hintButtonLabel: string;
-  isDisabled: boolean;
-  onRevealNextHint: () => void;
   shouldOfferHint: boolean;
 }) {
   return (
-    <section className="space-y-3 rounded-[22px] border border-slate-200/80 bg-slate-50/70 px-4 py-4 dark:border-slate-800 dark:bg-slate-950/60">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-1">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
-            Zero-token hints
-          </p>
-          <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
-            Deterministic nudges built from the question, answer focus, and
-            ordered rubric points.
-          </p>
-        </div>
-
-        <button
-          className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-sky-300 hover:text-sky-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:hover:border-sky-500 dark:hover:text-sky-200 dark:disabled:border-slate-800 dark:disabled:bg-slate-900 dark:disabled:text-slate-600"
-          disabled={isDisabled}
-          onClick={onRevealNextHint}
-          type="button"
-        >
-          {hintButtonLabel}
-        </button>
-      </div>
-
+    <section className="space-y-3">
       {shouldOfferHint ? (
         <div className="rounded-[18px] border border-amber-300 bg-amber-50 px-3.5 py-3 text-sm leading-6 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
           Looks like you&apos;re stuck. Want a hint?
@@ -2094,6 +2995,12 @@ function ReviewScoreSection({
   feedback,
   isEmphasized = false,
 }: ReviewScoreSectionProps) {
+  const reviewSourceLabel = getReviewSourceLabel(feedback.reviewSource);
+  const reviewSourceBadgeClassName =
+    feedback.reviewSource === "ai_review"
+      ? "border-sky-200 bg-white text-sky-700 dark:border-sky-500/40 dark:bg-slate-950 dark:text-sky-200"
+      : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100";
+
   return (
     <section
       className={`rounded-[22px] border px-4 py-4 ${
@@ -2119,8 +3026,29 @@ function ReviewScoreSection({
         >
           {feedback.score}/{feedback.maxScore}
         </p>
+        <span
+          className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] ${reviewSourceBadgeClassName}`}
+        >
+          {reviewSourceLabel}
+        </span>
       </div>
     </section>
+  );
+}
+
+function ReviewSourceNotice({
+  feedback,
+}: {
+  feedback: MarkAnswerResponse;
+}) {
+  if (feedback.reviewSource !== "fallback_review") {
+    return null;
+  }
+
+  return (
+    <div className="rounded-[20px] border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+      Fallback review shown. {feedback.fallbackReason}
+    </div>
   );
 }
 
@@ -2516,31 +3444,57 @@ type DesktopSessionRailProps = {
 
 function DesktopSessionRail({ onExpand }: DesktopSessionRailProps) {
   return (
-    <div className="flex h-full items-start justify-center border-l border-slate-200 bg-white px-2 pt-5 dark:border-slate-800 dark:bg-slate-950">
-      <button
-        aria-expanded="false"
-        aria-label="Reopen practice controls"
-        className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
+    <div className="flex h-full min-h-0 items-start justify-center overflow-hidden border-l border-slate-200 bg-white px-2 pt-5 dark:border-slate-800 dark:bg-slate-950 xl:rounded-l-[26px] xl:border xl:border-r-0 xl:border-slate-200/80 xl:bg-slate-100/88 xl:shadow-[0_28px_60px_-46px_rgba(15,23,42,0.72)] xl:backdrop-blur-sm dark:xl:border-slate-800/80 dark:xl:bg-slate-950/92">
+      <DesktopSidebarToggle
+        ariaExpanded={false}
+        ariaLabel="Reopen practice controls"
+        className="h-9 w-9"
+        direction="left"
         onClick={onExpand}
-        type="button"
-      >
-        <PanelExpandIcon className="h-4 w-4" />
-      </button>
+      />
     </div>
   );
 }
 
 type MobileSessionDrawerProps = {
+  isPhoneLayout: boolean;
   isOpen: boolean;
   onClose: () => void;
   children: ReactNode;
 };
 
 function MobileSessionDrawer({
+  isPhoneLayout,
   isOpen,
   onClose,
   children,
 }: MobileSessionDrawerProps) {
+  if (isPhoneLayout) {
+    return (
+      <div
+        className={`fixed inset-0 z-50 px-3 pb-3 pt-3 transition-opacity duration-200 ease-out sm:hidden ${
+          isOpen ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
+      >
+        <div
+          className={`mx-auto flex h-full w-full max-w-xl flex-col transition-[transform,opacity] duration-200 ease-out ${
+            isOpen ? "translate-y-0 opacity-100" : "-translate-y-4 opacity-0"
+          }`}
+        >
+          <div className="min-h-0 flex-1 overflow-hidden">
+            {children}
+            <button
+              aria-label="Close session panel"
+              className="sr-only"
+              onClick={onClose}
+              type="button"
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`fixed inset-y-0 right-0 z-50 w-full max-w-sm transition-[transform,opacity] duration-200 ease-out will-change-transform xl:hidden ${
@@ -2557,6 +3511,55 @@ function MobileSessionDrawer({
           onClick={onClose}
           type="button"
         />
+      </div>
+    </div>
+  );
+}
+
+function PhoneStickyActionBar({
+  keyboardOffset,
+  isSkippingQuestion,
+  submitDisabled,
+  submitLabel,
+  onSkipQuestion,
+  onSubmitAnswer,
+}: {
+  keyboardOffset: number;
+  isSkippingQuestion: boolean;
+  submitDisabled: boolean;
+  submitLabel: string;
+  onSkipQuestion: () => void;
+  onSubmitAnswer: () => void;
+}) {
+  return (
+    <div
+      className="pointer-events-none fixed inset-x-0 z-30 px-4 sm:hidden"
+      style={{
+        bottom: `${keyboardOffset}px`,
+        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.75rem)",
+      }}
+    >
+      <div className="pointer-events-auto mx-auto w-full max-w-[720px] rounded-[24px] border border-slate-200 bg-white/96 p-3 shadow-[0_20px_50px_-28px_rgba(15,23,42,0.65)] backdrop-blur dark:border-slate-800 dark:bg-slate-950/96">
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] gap-3">
+          <button
+            className={secondaryButtonClass}
+            disabled={isSkippingQuestion}
+            onClick={onSkipQuestion}
+            type="button"
+          >
+            {isSkippingQuestion ? "Skipping..." : "Skip"}
+          </button>
+          <button
+            aria-label={submitLabel}
+            className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white shadow-[0_14px_30px_-20px_rgba(15,23,42,0.8)] transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-100 dark:disabled:bg-slate-800 dark:disabled:text-slate-500"
+            disabled={submitDisabled}
+            onClick={onSubmitAnswer}
+            type="button"
+          >
+            <span>Submit</span>
+            <ArrowUpIcon className="h-[18px] w-[18px]" />
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -2593,6 +3596,16 @@ function getActiveThread(threads: SessionThread[]) {
   }
 
   return lastThread;
+}
+
+function getThreadNumber(threads: SessionThread[], threadId: string) {
+  const threadIndex = threads.findIndex((thread) => thread.threadId === threadId);
+
+  return threadIndex >= 0 ? threadIndex + 1 : threads.length;
+}
+
+function isComposerVisibleForStage(stage: ThreadStage) {
+  return stage === "question" || stage === "improving" || stage === "feedback";
 }
 
 function createSessionThread(
@@ -2638,6 +3651,29 @@ function updateActiveThread(
   nextThreads[lastIndex] = updater(nextThreads[lastIndex]);
 
   return nextThreads;
+}
+
+function updateThreadById(
+  threads: SessionThread[],
+  threadId: string,
+  updater: (thread: SessionThread) => SessionThread,
+) {
+  const threadIndex = threads.findIndex((thread) => thread.threadId === threadId);
+
+  if (threadIndex < 0) {
+    return {
+      threads,
+      found: false,
+    };
+  }
+
+  const nextThreads = [...threads];
+  nextThreads[threadIndex] = updater(nextThreads[threadIndex]);
+
+  return {
+    threads: nextThreads,
+    found: true,
+  };
 }
 
 function getCommandWordLabel(
@@ -2719,6 +3755,9 @@ function isGenerateQuestionResponse(
 function isMarkAnswerResponse(body: unknown): body is MarkAnswerResponse {
   return (
     isRecord(body) &&
+    isPracticeReviewSource(body.reviewSource) &&
+    (body.reviewSource !== "fallback_review" ||
+      typeof body.fallbackReason === "string") &&
     typeof body.score === "number" &&
     typeof body.maxScore === "number" &&
     Array.isArray(body.rubricAssessment) &&
@@ -2745,29 +3784,82 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function isPracticeReviewSource(value: unknown): value is PracticeReviewSource {
+  return value === "ai_review" || value === "fallback_review";
+}
+
 function isRubricAssessmentStatus(
   value: unknown,
 ): value is "present" | "partial" | "absent" {
   return value === "present" || value === "partial" || value === "absent";
 }
 
-function PanelExpandIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <path
-        d="M7 5v14m4-12.25 5.25 5.25L11 17.25"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-    </svg>
-  );
+function getReviewSourceLabel(reviewSource: PracticeReviewSource) {
+  return reviewSource === "fallback_review" ? "Fallback review" : "AI review";
+}
+
+function getReviewToggleLabel(
+  reviewSource: PracticeReviewSource,
+  isCollapsed: boolean,
+) {
+  const reviewLabel =
+    reviewSource === "fallback_review" ? "fallback review" : "AI review";
+
+  return isCollapsed ? `Show ${reviewLabel}` : `Hide ${reviewLabel}`;
+}
+
+function getCollapsedReviewMessage(reviewSource: PracticeReviewSource) {
+  return reviewSource === "fallback_review"
+    ? "Fallback review hidden while you draft. Reopen it anytime if you want to check the response again."
+    : "AI review hidden while you draft. Reopen it anytime if you want to check the feedback again.";
+}
+
+function logPracticeMarkingEvent(
+  event: string,
+  details: Record<string, unknown>,
+) {
+  if (!SHOULD_LOG_CLIENT_MARKING || typeof window === "undefined") {
+    return;
+  }
+
+  console.info(`[practice-marking] ${event}`, details);
+}
+
+function warnPracticeMarkingEvent(
+  event: string,
+  details: Record<string, unknown>,
+) {
+  if (!SHOULD_LOG_CLIENT_MARKING || typeof window === "undefined") {
+    return;
+  }
+
+  console.warn(`[practice-marking] ${event}`, details);
+}
+
+function getMarkAnswerResponseLogSummary(body: unknown) {
+  if (!isMarkAnswerResponse(body)) {
+    return {};
+  }
+
+  return {
+    rubricAssessmentSummary: getRubricAssessmentLogSummary(body.rubricAssessment),
+  };
+}
+
+function getRubricAssessmentLogSummary(
+  rubricAssessment: MarkAnswerResponse["rubricAssessment"],
+) {
+  return {
+    absentPoints: rubricAssessment
+      .filter((item) => item.status === "absent")
+      .map((item) => item.pointText),
+    partialPoints: rubricAssessment
+      .filter((item) => item.status === "partial")
+      .map((item) => item.pointText),
+    presentPoints: rubricAssessment
+      .filter((item) => item.status === "present")
+      .map((item) => item.pointText),
+  };
 }
 
 function ThreadDisclosureIcon({ className }: { className?: string }) {
@@ -2780,6 +3872,25 @@ function ThreadDisclosureIcon({ className }: { className?: string }) {
     >
       <path
         d="m6.75 9.75 5.25 5.25 5.25-5.25"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function ArrowUpIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path
+        d="M12 18V6m0 0-5 5m5-5 5 5"
         stroke="currentColor"
         strokeLinecap="round"
         strokeLinejoin="round"

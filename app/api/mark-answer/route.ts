@@ -9,7 +9,12 @@ import {
   normalizeNumericId,
   type SupabaseServerClient,
 } from "@/lib/generated-practice-content";
+import {
+  countMeaningfulWords,
+  sanitizePointsModeResponse,
+} from "@/lib/marking/evidence";
 import { markAnswer, type PreparedMarkingInput } from "@/lib/marking";
+import { computePointsModeScore } from "@/lib/marking/scoring";
 import {
   getAuthenticatedUserId,
   recordGeneratedQuestionAttemptAndProgress,
@@ -20,6 +25,7 @@ import { createClient } from "@/utils/supabase/server";
 export const runtime = "nodejs";
 export const maxDuration = 90;
 const SHOULD_LOG_MARKING_TIMINGS = process.env.NODE_ENV === "development";
+const SHOULD_LOG_MARKING_FLOW = process.env.NODE_ENV === "development";
 
 type MarkAnswerRouteResult<T> = {
   status: number;
@@ -75,6 +81,7 @@ export async function POST(request: Request) {
   let responseSerializationMs: number | null = null;
   let promptChars: number | null = null;
   let rawOutputChars: number | null = null;
+  let reviewSource: MarkAnswerResponse["reviewSource"] | null = null;
 
   try {
     const requestBodyResult = await measureAsync(() =>
@@ -85,10 +92,11 @@ export async function POST(request: Request) {
 
     if (payload === null) {
       responseStatus = 400;
-      const responseResult = createTimedJsonResponse(
-        { error: "Invalid request body" },
-        { status: 400 },
-      );
+      const responseResult = createLoggedJsonResponse({
+        body: { error: "Invalid request body" },
+        generatedQuestionId,
+        status: 400,
+      });
       responseSerializationMs = responseResult.ms;
       return responseResult.result;
     }
@@ -99,7 +107,9 @@ export async function POST(request: Request) {
 
     if (isApiFailure(validRequest)) {
       responseStatus = validRequest.status;
-      const responseResult = createTimedJsonResponse(validRequest.body, {
+      const responseResult = createLoggedJsonResponse({
+        body: validRequest.body,
+        generatedQuestionId,
         status: validRequest.status,
       });
       responseSerializationMs = responseResult.ms;
@@ -107,15 +117,24 @@ export async function POST(request: Request) {
     }
 
     generatedQuestionId = validRequest.generatedQuestionId;
+    logMarkAnswerRouteEvent("request_received", {
+      answerChars: validRequest.answerText.length,
+      answerText: validRequest.answerText,
+      attemptNumber: validRequest.attemptNumber,
+      generatedQuestionId,
+      markingMode: "points",
+      meaningfulWords: countMeaningfulWords(validRequest.answerText),
+    });
     const supabase = await createClient();
     const userId = await getAuthenticatedUserId(supabase);
 
     if (!userId) {
       responseStatus = 401;
-      const responseResult = createTimedJsonResponse(
-        { error: SAFE_ERRORS.authRequired },
-        { status: 401 },
-      );
+      const responseResult = createLoggedJsonResponse({
+        body: { error: SAFE_ERRORS.authRequired },
+        generatedQuestionId,
+        status: 401,
+      });
       responseSerializationMs = responseResult.ms;
       return responseResult.result;
     }
@@ -127,7 +146,9 @@ export async function POST(request: Request) {
 
     if (isApiFailure(markingInputResult)) {
       responseStatus = markingInputResult.status;
-      const responseResult = createTimedJsonResponse(markingInputResult.body, {
+      const responseResult = createLoggedJsonResponse({
+        body: markingInputResult.body,
+        generatedQuestionId,
         status: markingInputResult.status,
       });
       responseSerializationMs = responseResult.ms;
@@ -146,8 +167,26 @@ export async function POST(request: Request) {
     dbRubricMs = loadMeta.dbRubricMs;
     dbTotalMs = loadMeta.dbTotalMs;
     maybeWarnAboutRubricSize(markingInput);
+    logMarkAnswerRouteEvent("marking_input_ready", {
+      answerChars: markingInput.answerText.length,
+      answerText: markingInput.answerText,
+      attemptNumber: validRequest.attemptNumber,
+      generatedQuestionId,
+      markingMode: "points",
+      marks: markingInput.marks,
+      questionType: markingInput.questionType,
+      rubricPoints: markingInput.rubricPoints.length,
+    });
+    logMarkAnswerRouteEvent("marking_dispatch", {
+      attemptNumber: validRequest.attemptNumber,
+      generatedQuestionId,
+    });
 
     const result = await markAnswer(markingInput);
+    const responseBody = sanitizeSuccessfulAiReviewResponse(
+      result.body,
+      markingInput,
+    );
     responseStatus = result.status;
     modelName = result.meta?.modelName ?? null;
     modelMaxTokens = result.meta?.modelMaxTokens ?? null;
@@ -160,8 +199,31 @@ export async function POST(request: Request) {
     scoringMs = result.meta?.scoringMs ?? null;
     promptChars = result.meta?.promptChars ?? null;
     rawOutputChars = result.meta?.rawOutputChars ?? null;
+    reviewSource = isSuccessfulMarkAnswerResult(responseBody)
+      ? responseBody.reviewSource
+      : null;
+    logMarkAnswerRouteEvent("marking_complete", {
+      generatedQuestionId,
+      maxScore: isSuccessfulMarkAnswerResult(responseBody)
+        ? responseBody.maxScore
+        : null,
+      modelMs,
+      modelName,
+      rubricAssessment: isSuccessfulMarkAnswerResult(responseBody)
+        ? responseBody.rubricAssessment
+        : null,
+      rubricAssessmentSummary: isSuccessfulMarkAnswerResult(responseBody)
+        ? getRubricAssessmentLogSummary(responseBody.rubricAssessment)
+        : null,
+      reviewSource,
+      score: isSuccessfulMarkAnswerResult(responseBody) ? responseBody.score : null,
+      status: result.status,
+    });
 
-    if (isSuccessfulMarkAnswerResult(result.body)) {
+    if (
+      isSuccessfulMarkAnswerResult(responseBody) &&
+      responseBody.reviewSource === "ai_review"
+    ) {
       try {
         await recordGeneratedQuestionAttemptAndProgress({
           supabase,
@@ -169,8 +231,8 @@ export async function POST(request: Request) {
           generatedQuestionId: validRequest.generatedQuestionId,
           subtopicId: questionSubtopicId,
           attemptNumber: validRequest.attemptNumber,
-          score: result.body.score,
-          maxScore: result.body.maxScore,
+          score: responseBody.score,
+          maxScore: responseBody.maxScore,
           answerText: markingInput.answerText,
         });
         await recordUserRequiredAreaProgress({
@@ -178,7 +240,7 @@ export async function POST(request: Request) {
           userId,
           subtopicId: questionSubtopicId,
           rubricPoints: markingInput.rubricPoints,
-          rubricAssessment: result.body.rubricAssessment,
+          rubricAssessment: responseBody.rubricAssessment,
         });
       } catch (caughtError) {
         console.error("[api/mark-answer] Failed to persist user progress", {
@@ -191,16 +253,36 @@ export async function POST(request: Request) {
         });
 
         responseStatus = 500;
-        const responseResult = createTimedJsonResponse(
-          { error: SAFE_ERRORS.progressWrite },
-          { status: 500 },
-        );
+        const responseResult = createLoggedJsonResponse({
+          body: { error: SAFE_ERRORS.progressWrite },
+          generatedQuestionId,
+          status: 500,
+        });
         responseSerializationMs = responseResult.ms;
         return responseResult.result;
       }
+    } else if (isSuccessfulMarkAnswerResult(responseBody)) {
+      console.warn("[api/mark-answer] Skipping progress persistence for non-AI review", {
+        fallbackReason:
+          responseBody.reviewSource === "fallback_review"
+            ? responseBody.fallbackReason
+            : null,
+        generatedQuestionId,
+        reviewSource: responseBody.reviewSource,
+      });
+      logMarkAnswerRouteEvent("progress_persist_skipped", {
+        fallbackReason:
+          responseBody.reviewSource === "fallback_review"
+            ? responseBody.fallbackReason
+            : null,
+        generatedQuestionId,
+        reviewSource: responseBody.reviewSource,
+      });
     }
 
-    const responseResult = createTimedJsonResponse(result.body, {
+    const responseResult = createLoggedJsonResponse({
+      body: responseBody,
+      generatedQuestionId,
       status: result.status,
     });
     responseSerializationMs = responseResult.ms;
@@ -230,6 +312,7 @@ export async function POST(request: Request) {
       answerTextChars,
       promptChars,
       rawOutputChars,
+      reviewSource,
       totalMs: roundTimingMs(performance.now() - requestStartedAt),
     });
   }
@@ -376,6 +459,11 @@ function isSuccessfulMarkAnswerResult(
   return (
     typeof body === "object" &&
     body !== null &&
+    "reviewSource" in body &&
+    isPracticeReviewSource(body.reviewSource) &&
+    (body.reviewSource !== "fallback_review" ||
+      ("fallbackReason" in body &&
+        typeof body.fallbackReason === "string")) &&
     "score" in body &&
     typeof body.score === "number" &&
     "maxScore" in body &&
@@ -425,6 +513,7 @@ function logTimingSummary({
   answerTextChars,
   promptChars,
   rawOutputChars,
+  reviewSource,
   totalMs,
 }: {
   generatedQuestionId: number | null;
@@ -449,6 +538,7 @@ function logTimingSummary({
   answerTextChars: number | null;
   promptChars: number | null;
   rawOutputChars: number | null;
+  reviewSource: MarkAnswerResponse["reviewSource"] | null;
   totalMs: number;
 }) {
   if (!SHOULD_LOG_MARKING_TIMINGS) {
@@ -489,6 +579,7 @@ function logTimingSummary({
       answerTextChars,
       promptChars,
       modelOutputChars: rawOutputChars,
+      reviewSource,
     })}`,
   );
 }
@@ -519,4 +610,141 @@ function createTimedJsonResponse<T>(body: T, init: { status: number }) {
 
 function roundTimingMs(value: number) {
   return Number(value.toFixed(1));
+}
+
+function isApiErrorResponse(body: unknown): body is ApiErrorResponse {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    "error" in body &&
+    typeof body.error === "string"
+  );
+}
+
+function isPracticeReviewSource(
+  value: unknown,
+): value is MarkAnswerResponse["reviewSource"] {
+  return value === "ai_review" || value === "fallback_review";
+}
+
+function createLoggedJsonResponse<T>({
+  body,
+  generatedQuestionId,
+  status,
+}: {
+  body: T;
+  generatedQuestionId: number | null;
+  status: number;
+}) {
+  const responseResult = createTimedJsonResponse(body, { status });
+  logMarkAnswerRouteEvent("response_send", {
+    ...getResponseLogSummary(body),
+    generatedQuestionId,
+    status,
+  });
+
+  return responseResult;
+}
+
+function getResponseLogSummary(body: unknown) {
+  if (isSuccessfulMarkAnswerResult(body)) {
+    return {
+      fallbackReason:
+        body.reviewSource === "fallback_review" ? body.fallbackReason : null,
+      maxScore: body.maxScore,
+      rubricAssessmentSummary: getRubricAssessmentLogSummary(body.rubricAssessment),
+      reviewSource: body.reviewSource,
+      score: body.score,
+    };
+  }
+
+  if (isApiErrorResponse(body)) {
+    return {
+      error: body.error,
+    };
+  }
+
+  return {};
+}
+
+function getRubricAssessmentLogSummary(
+  rubricAssessment: MarkAnswerResponse["rubricAssessment"],
+) {
+  return {
+    absentPoints: rubricAssessment
+      .filter((item) => item.status === "absent")
+      .map((item) => ({
+        pointText: item.pointText,
+        evidence: item.evidence,
+      })),
+    partialPoints: rubricAssessment
+      .filter((item) => item.status === "partial")
+      .map((item) => ({
+        pointText: item.pointText,
+        evidence: item.evidence,
+      })),
+    presentPoints: rubricAssessment
+      .filter((item) => item.status === "present")
+      .map((item) => ({
+        pointText: item.pointText,
+        evidence: item.evidence,
+      })),
+  };
+}
+
+function sanitizeSuccessfulAiReviewResponse(
+  body: MarkAnswerResponse | ApiErrorResponse,
+  input: PreparedMarkingInput,
+) {
+  if (!isSuccessfulMarkAnswerResult(body) || body.reviewSource !== "ai_review") {
+    return body;
+  }
+
+  const sanitizedResponse = sanitizePointsModeResponse(
+    {
+      rubricAssessment: body.rubricAssessment,
+      feedback: body.feedback,
+    },
+    input,
+  );
+  const sanitizedScore = computePointsModeScore(
+    sanitizedResponse.rubricAssessment,
+    input.marks,
+  );
+  const wasAdjusted =
+    sanitizedScore !== body.score ||
+    JSON.stringify(sanitizedResponse.rubricAssessment) !==
+      JSON.stringify(body.rubricAssessment);
+
+  if (wasAdjusted) {
+    logMarkAnswerRouteEvent("marking_post_sanitize_adjustment", {
+      generatedQuestionId: input.generatedQuestionId,
+      originalRubricAssessmentSummary: getRubricAssessmentLogSummary(
+        body.rubricAssessment,
+      ),
+      originalScore: body.score,
+      sanitizedRubricAssessmentSummary: getRubricAssessmentLogSummary(
+        sanitizedResponse.rubricAssessment,
+      ),
+      sanitizedScore,
+    });
+  }
+
+  return {
+    ...body,
+    feedback: sanitizedResponse.feedback,
+    rubricAssessment: sanitizedResponse.rubricAssessment,
+    score: sanitizedScore,
+  };
+}
+
+function logMarkAnswerRouteEvent(
+  event: string,
+  details: Record<string, unknown>,
+) {
+  if (!SHOULD_LOG_MARKING_FLOW) {
+    return;
+  }
+
+  console.info(`[api/mark-answer] ${event} ${JSON.stringify(details)}`);
 }

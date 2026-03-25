@@ -1,5 +1,6 @@
 "use client";
 
+import DesktopSidebarToggle from "@/components/practice/desktop-sidebar-toggle";
 import type {
   PracticeQuestionFilterMode,
   PracticeSessionLength,
@@ -37,6 +38,7 @@ type PracticeSessionPanelProps = {
   onResetSession: () => void;
   onClose?: () => void;
   onCollapse?: () => void;
+  presentation?: "standard" | "sheet";
 };
 
 const primaryButtonClass =
@@ -86,6 +88,7 @@ export default function PracticeSessionPanel({
   onResetSession,
   onClose,
   onCollapse,
+  presentation = "standard",
 }: PracticeSessionPanelProps) {
   const visibleTopics = selectedSubtopics.slice(0, 5);
   const remainingTopicCount = Math.max(
@@ -99,15 +102,25 @@ export default function PracticeSessionPanel({
     !isSessionComplete;
   const shouldShowDraftNotice =
     currentQuestion !== null && answerDraft.trim().length > 0;
-  const shellClassName = isDeemphasized
-    ? "flex h-full min-h-0 flex-col border-l border-slate-200 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-950/80"
-    : "flex h-full min-h-0 flex-col border-l border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950";
-  const sectionClassName = isDeemphasized
-    ? "rounded-2xl border border-slate-200/80 bg-white/80 px-4 py-4 dark:border-slate-800 dark:bg-slate-900/55"
-    : "rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 dark:border-slate-800 dark:bg-slate-900/50";
+  const shellClassName =
+    presentation === "sheet"
+      ? isDeemphasized
+        ? "flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-white/95 shadow-[0_24px_60px_-36px_rgba(15,23,42,0.6)] dark:border-slate-800 dark:bg-slate-950/95"
+        : "flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_24px_60px_-36px_rgba(15,23,42,0.6)] dark:border-slate-800 dark:bg-slate-950"
+      : isDeemphasized
+        ? "flex h-full min-h-0 flex-col overflow-hidden border-l border-slate-200 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-950/80 xl:rounded-l-[26px] xl:border xl:border-r-0 xl:border-slate-200/80 xl:bg-slate-100/82 xl:shadow-[0_28px_60px_-46px_rgba(15,23,42,0.72)] xl:backdrop-blur-sm dark:xl:border-slate-800/80 dark:xl:bg-slate-950/90"
+        : "flex h-full min-h-0 flex-col overflow-hidden border-l border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 xl:rounded-l-[26px] xl:border xl:border-r-0 xl:border-slate-200/80 xl:bg-slate-100/88 xl:shadow-[0_28px_60px_-46px_rgba(15,23,42,0.72)] xl:backdrop-blur-sm dark:xl:border-slate-800/80 dark:xl:bg-slate-950/92";
+  const sectionClassName =
+    presentation === "sheet"
+      ? isDeemphasized
+        ? "rounded-2xl border border-slate-200/80 bg-white/80 px-4 py-4 dark:border-slate-800 dark:bg-slate-900/55"
+        : "rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 dark:border-slate-800 dark:bg-slate-900/50"
+      : isDeemphasized
+        ? "rounded-2xl border border-slate-200/80 bg-white/80 px-4 py-4 xl:border-slate-200/90 xl:bg-white/74 xl:shadow-[0_18px_40px_-34px_rgba(15,23,42,0.7)] dark:border-slate-800 dark:bg-slate-900/55 dark:xl:bg-slate-900/72"
+        : "rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 xl:border-slate-200/90 xl:bg-white/78 xl:shadow-[0_18px_40px_-34px_rgba(15,23,42,0.7)] dark:border-slate-800 dark:bg-slate-900/50 dark:xl:bg-slate-900/75";
 
   return (
-    <aside className="h-full min-h-0 bg-white dark:bg-slate-950">
+    <aside className="h-full min-h-0 bg-slate-50 dark:bg-slate-950">
       <div className={shellClassName}>
         <div className="shrink-0 border-b border-slate-200 px-4 pb-4 pt-5 dark:border-slate-800">
           <div className="flex items-start justify-between gap-3">
@@ -133,14 +146,13 @@ export default function PracticeSessionPanel({
                 <CloseIcon className="h-4 w-4" />
               </button>
             ) : onCollapse ? (
-              <button
-                aria-label="Collapse session panel"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
+              <DesktopSidebarToggle
+                ariaExpanded
+                ariaLabel="Collapse session panel"
+                className="h-9 w-9"
+                direction="right"
                 onClick={onCollapse}
-                type="button"
-              >
-                <PanelCollapseIcon className="h-4 w-4" />
-              </button>
+              />
             ) : null}
           </div>
         </div>
@@ -322,28 +334,3 @@ function CloseIcon({ className }: { className?: string }) {
   );
 }
 
-function PanelCollapseIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <path
-        d="M7.75 6.75h5.5m-5.5 5.25h5.5m-5.5 5.25h5.5m8-12.25v14.5"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-      <path
-        d="m17 12-2.75 2.75m2.75-2.75-2.75-2.75"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-    </svg>
-  );
-}

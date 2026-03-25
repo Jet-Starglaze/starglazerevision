@@ -30,6 +30,7 @@ export default function PracticeWorkspace({
   subjectSlug,
   modules,
 }: PracticeWorkspaceProps) {
+  const [isPhoneLayout, setIsPhoneLayout] = useState(false);
   const [selectedSubtopicIds, setSelectedSubtopicIds] = useState<Set<number>>(
     () => new Set(),
   );
@@ -71,6 +72,20 @@ export default function PracticeWorkspace({
       ),
     );
   }, [modules, selectedSubtopicIds]);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 767px)");
+    const updateIsPhoneLayout = () => {
+      setIsPhoneLayout(mediaQuery.matches);
+    };
+
+    updateIsPhoneLayout();
+    mediaQuery.addEventListener("change", updateIsPhoneLayout);
+
+    return () => {
+      mediaQuery.removeEventListener("change", updateIsPhoneLayout);
+    };
+  }, []);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -144,7 +159,7 @@ export default function PracticeWorkspace({
   }
 
   const desktopGridClass = isDesktopSidebarCollapsed
-    ? "xl:grid-cols-[4.75rem_minmax(0,1fr)]"
+    ? "xl:grid-cols-[4rem_minmax(0,1fr)]"
     : "xl:grid-cols-[320px_minmax(0,1fr)]";
 
   return (
@@ -158,7 +173,7 @@ export default function PracticeWorkspace({
       />
 
       <div
-        className={`grid min-h-[calc(100dvh-8rem)] w-full xl:h-full xl:min-h-0 xl:transition-[grid-template-columns] xl:duration-200 xl:ease-out motion-reduce:transition-none ${desktopGridClass}`}
+        className={`grid min-h-[calc(100dvh-8rem)] w-full xl:h-full xl:min-h-0 ${desktopGridClass}`}
       >
         <div className="hidden xl:block xl:min-h-0">
           <PracticeSidebar
@@ -182,6 +197,7 @@ export default function PracticeWorkspace({
         </div>
 
         <PracticeWorkspaceShell
+          isPhoneLayout={isPhoneLayout}
           isSessionPanelOpen={activeMobilePane === "session"}
           onCloseSessionPanel={() => setActiveMobilePane(null)}
           onOpenSessionPanel={() => setActiveMobilePane("session")}
@@ -195,6 +211,7 @@ export default function PracticeWorkspace({
       </div>
 
       <MobileSidebarDrawer
+        isPhoneLayout={isPhoneLayout}
         isOpen={activeMobilePane === "syllabus"}
         onClose={() => setActiveMobilePane(null)}
       >
@@ -209,6 +226,7 @@ export default function PracticeWorkspace({
           onToggleModuleSelection={toggleModuleSelection}
           onToggleSubtopicSelection={toggleSubtopicSelection}
           onToggleTopicSelection={toggleTopicSelection}
+          presentation={isPhoneLayout ? "sheet" : "standard"}
           selectedSubtopicIds={selectedSubtopicIds}
           subjectName={subjectName}
         />
@@ -218,16 +236,44 @@ export default function PracticeWorkspace({
 }
 
 type MobileSidebarDrawerProps = {
+  isPhoneLayout: boolean;
   isOpen: boolean;
   onClose: () => void;
   children: ReactNode;
 };
 
 function MobileSidebarDrawer({
+  isPhoneLayout,
   isOpen,
   onClose,
   children,
 }: MobileSidebarDrawerProps) {
+  if (isPhoneLayout) {
+    return (
+      <div
+        className={`fixed inset-0 z-50 px-3 pb-3 pt-3 transition-opacity duration-200 ease-out sm:hidden ${
+          isOpen ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
+      >
+        <div
+          className={`mx-auto flex h-full w-full max-w-xl flex-col transition-[transform,opacity] duration-200 ease-out ${
+            isOpen ? "translate-y-0 opacity-100" : "-translate-y-4 opacity-0"
+          }`}
+        >
+          <div className="min-h-0 flex-1 overflow-hidden">
+            {children}
+            <button
+              aria-label="Close syllabus"
+              className="sr-only"
+              onClick={onClose}
+              type="button"
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`fixed inset-y-0 left-0 z-50 w-full max-w-sm transition-[transform,opacity] duration-200 ease-out will-change-transform xl:hidden ${

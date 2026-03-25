@@ -1,7 +1,5 @@
 import type { MarkAnswerResponse } from "@/lib/mock-biology-practice-api";
 import {
-  createAllAbsentPointsModeResponse,
-  isAnswerTooShortToMark,
   sanitizePointsModeResponse,
 } from "@/lib/marking/evidence";
 import { finalizePointsModeResponse } from "@/lib/marking/feedback";
@@ -24,27 +22,13 @@ import {
 const SAFE_ERRORS = {
   markingFailure: "Could not review this answer right now.",
 };
+const SHOULD_LOG_MARKING_FLOW = process.env.NODE_ENV === "development";
 const SHOULD_LOG_MATCHING_WARNINGS = process.env.NODE_ENV === "development";
 
 export async function markAnswer(
   input: PreparedMarkingInput,
 ): Promise<MarkingApiResult<MarkAnswerResponse>> {
   const baseDiagnostics = createBaseDiagnostics(input);
-
-  if (isAnswerTooShortToMark(input.answerText)) {
-    const scoringResult = measureSync(() =>
-      scorePointsModeResponse(createAllAbsentPointsModeResponse(input), input),
-    );
-
-    return {
-      ...scoringResult.result,
-      meta: {
-        ...baseDiagnostics,
-        scoringMs: scoringResult.ms,
-      },
-    };
-  }
-
   const promptBuildResult = measureSync(() => buildPointsMarkingPrompt(input));
   const prompt = promptBuildResult.result;
   const promptDiagnostics: MarkingDiagnostics = {
@@ -63,9 +47,27 @@ export async function markAnswer(
     scoringMs: null,
     rawOutputChars: null,
   };
+  logMarkingFlowEvent("model_call_start", {
+    generatedQuestionId: input.generatedQuestionId,
+    answerChars: input.answerText.length,
+    marks: input.marks,
+    questionType: input.questionType,
+    rubricPoints: input.rubricPoints.length,
+  });
   const modelOutput = await requestMarkingModelOutput(input, prompt);
 
   if (isApiFailure(modelOutput)) {
+    logMarkingFlowEvent("model_call_failed", {
+      generatedQuestionId: input.generatedQuestionId,
+      status: modelOutput.status,
+      error:
+        typeof modelOutput.body === "object" &&
+        modelOutput.body !== null &&
+        "error" in modelOutput.body &&
+        typeof modelOutput.body.error === "string"
+          ? modelOutput.body.error
+          : "Unknown model error",
+    });
     return {
       ...modelOutput,
       meta: promptDiagnostics,
@@ -81,6 +83,13 @@ export async function markAnswer(
     modelMs: modelOutput.durationMs,
     rawOutputChars: modelOutput.rawOutput.length,
   };
+  logMarkingFlowEvent("model_call_complete", {
+    generatedQuestionId: input.generatedQuestionId,
+    modelName: modelOutput.modelName,
+    completionTokensUsed: modelOutput.completionTokensUsed,
+    finishReason: modelOutput.finishReason,
+    modelMs: modelOutput.durationMs,
+  });
 
   let parsedOutput: unknown;
   let parseMs: number | null = null;
@@ -182,6 +191,7 @@ function scorePointsModeResponse(
   return {
     status: 200,
     body: {
+      reviewSource: "ai_review",
       score,
       maxScore: input.marks,
       rubricAssessment: validatedResponse.rubricAssessment,
@@ -275,4 +285,15 @@ function measureSync<T>(action: () => T) {
 
 function roundTimingMs(value: number) {
   return Number(value.toFixed(1));
+}
+
+function logMarkingFlowEvent(
+  event: string,
+  details: Record<string, unknown>,
+) {
+  if (!SHOULD_LOG_MARKING_FLOW) {
+    return;
+  }
+
+  console.info(`[api/mark-answer] ${event} ${JSON.stringify(details)}`);
 }

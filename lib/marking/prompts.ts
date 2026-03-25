@@ -71,6 +71,7 @@ export function buildPointsMarkingPrompt(
       [
         '- "each haemoglobin molecule has 4 polypeptide chains" plus "each polypeptide chain has a haem group" can support "haemoglobin contains four haem groups" for a long-answer question.',
         '- "ribosomes on rough ER" can support protein synthesis when the biological link is direct and standard.',
+        '- "plasma carries glucose and urea and most carbon dioxide" can support separate plasma-transport rubric points for glucose, urea, and most carbon dioxide.',
       ].join("\n"),
       "Counterexamples:",
       [

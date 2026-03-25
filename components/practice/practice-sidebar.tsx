@@ -4,6 +4,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
+import DesktopSidebarToggle from "@/components/practice/desktop-sidebar-toggle";
 import type {
   PracticeModule,
   PracticeSubtopic,
@@ -26,12 +27,11 @@ type PracticeSidebarProps = {
   onClearSelection: () => void;
   className?: string;
   onClose?: () => void;
+  presentation?: "standard" | "sheet";
 };
 
-const asideClassName = "h-full min-h-0 bg-white dark:bg-slate-950";
-
-const panelClassName =
-  "flex h-full min-h-0 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950";
+const asideClassName = "h-full min-h-0 bg-slate-50 dark:bg-slate-950";
+const noop = () => {};
 
 export default function PracticeSidebar({
   subjectName,
@@ -49,7 +49,15 @@ export default function PracticeSidebar({
   onClearSelection,
   className,
   onClose,
+  presentation = "standard",
 }: PracticeSidebarProps) {
+  const handleToggleCollapsed = onToggleCollapsed ?? noop;
+  const selectedCount = selectedSubtopicIds.size;
+  const selectedCountLabel = `${selectedCount} selected`;
+  const panelClassName =
+    presentation === "sheet"
+      ? "flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_24px_60px_-36px_rgba(15,23,42,0.6)] dark:border-slate-800 dark:bg-slate-950"
+      : "flex h-full min-h-0 flex-col overflow-hidden border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 xl:rounded-r-[26px] xl:border xl:border-l-0 xl:border-slate-200/80 xl:bg-slate-100/85 xl:shadow-[0_28px_60px_-46px_rgba(15,23,42,0.72)] xl:backdrop-blur-sm dark:xl:border-slate-800/80 dark:xl:bg-slate-950/92";
   const headerAction = onClose ? (
     <button
       aria-label="Close syllabus"
@@ -60,48 +68,37 @@ export default function PracticeSidebar({
       <CloseIcon className="h-4 w-4" />
     </button>
   ) : onToggleCollapsed ? (
-    <button
-      aria-expanded="true"
-      aria-label="Collapse syllabus"
-      className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
-      onClick={onToggleCollapsed}
-      type="button"
-    >
-      <PanelCollapseIcon className="h-4 w-4" />
-    </button>
+    <DesktopSidebarToggle
+      ariaExpanded
+      ariaLabel="Collapse syllabus"
+      direction="left"
+      onClick={handleToggleCollapsed}
+    />
   ) : null;
 
   const collapsedRail = (
     <div className={panelClassName}>
-      <div className="flex h-full min-h-0 flex-col items-center px-3 py-5">
-        <button
-          aria-expanded="false"
-          aria-label="Expand syllabus"
-          className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-sky-500 dark:hover:text-sky-200"
-          onClick={onToggleCollapsed}
-          type="button"
+      <div className="flex h-full min-h-0 flex-col items-center px-2 py-5">
+        <DesktopSidebarToggle
+          ariaExpanded={false}
+          ariaLabel="Open syllabus"
+          className="h-9 w-9"
+          direction="right"
+          onClick={handleToggleCollapsed}
+          title="Open syllabus"
+        />
+
+        <span
+          aria-label={selectedCountLabel}
+          className={`mt-3 inline-flex min-h-8 min-w-8 items-center justify-center rounded-full border px-2 text-sm font-semibold tabular-nums shadow-[0_16px_26px_-22px_rgba(15,23,42,0.85)] ${
+            selectedCount > 0
+              ? "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/12 dark:text-sky-200"
+              : "border-slate-200/90 bg-white/82 text-slate-500 dark:border-slate-700/80 dark:bg-slate-900/88 dark:text-slate-300"
+          }`}
+          title={selectedCountLabel}
         >
-          <PanelExpandIcon className="h-4 w-4" />
-        </button>
-
-        <div className="mt-5 flex flex-col items-center gap-3 text-center">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-sky-700 dark:text-sky-200">
-            Syllabus
-          </p>
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium leading-5 text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
-            {selectedSubtopicIds.size} selected
-          </div>
-        </div>
-
-        <p className="mt-4 text-center text-xs leading-5 text-slate-500 dark:text-slate-400">
-          Reopen the rail to change topics.
-        </p>
-
-        <div className="mt-auto pt-4">
-          <span className="inline-flex h-10 min-w-10 items-center justify-center rounded-full bg-sky-50 px-3 text-sm font-semibold text-sky-700 dark:bg-sky-500/10 dark:text-sky-200">
-            {selectedSubtopicIds.size}
-          </span>
-        </div>
+          {selectedCount}
+        </span>
       </div>
     </div>
   );
@@ -130,11 +127,11 @@ export default function PracticeSidebar({
 
         <div className="mt-5 flex items-center justify-between gap-3">
           <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-            {selectedSubtopicIds.size} selected
+            {selectedCountLabel}
           </span>
           <button
             className="text-sm font-semibold text-slate-700 transition hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-200 dark:hover:text-sky-200"
-            disabled={selectedSubtopicIds.size === 0}
+            disabled={selectedCount === 0}
             onClick={onClearSelection}
             type="button"
           >
@@ -211,17 +208,23 @@ export default function PracticeSidebar({
     </div>
   );
 
+  if (!onToggleCollapsed) {
+    return (
+      <aside
+        className={`relative overflow-hidden ${asideClassName} ${className ?? ""}`}
+      >
+        {expandedPanel}
+      </aside>
+    );
+  }
+
   return (
     <aside
       className={`relative overflow-hidden ${asideClassName} ${className ?? ""}`}
     >
       <div
         aria-hidden={!isCollapsed}
-        className={`absolute inset-0 transition-[transform,opacity] duration-200 ease-out motion-reduce:transition-none ${
-          isCollapsed
-            ? "translate-x-0 opacity-100"
-            : "-translate-x-5 opacity-0 pointer-events-none"
-        }`}
+        className="absolute inset-y-0 left-0 z-0 w-[4rem]"
         inert={!isCollapsed}
       >
         {collapsedRail}
@@ -229,10 +232,10 @@ export default function PracticeSidebar({
 
       <div
         aria-hidden={isCollapsed}
-        className={`absolute inset-0 transition-[transform,opacity] duration-200 ease-out motion-reduce:transition-none ${
+        className={`absolute inset-y-0 left-0 z-10 w-[320px] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform motion-reduce:transition-none ${
           isCollapsed
-            ? "-translate-x-5 opacity-0 pointer-events-none"
-            : "translate-x-0 opacity-100"
+            ? "-translate-x-full pointer-events-none"
+            : "translate-x-0"
         }`}
         inert={isCollapsed}
       >
@@ -568,51 +571,6 @@ function CloseIcon({ className }: { className?: string }) {
     >
       <path
         d="m7.75 7.75 8.5 8.5m0-8.5-8.5 8.5"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-    </svg>
-  );
-}
-
-function PanelCollapseIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <path
-        d="M7.75 6.75h5.5m-5.5 5.25h5.5m-5.5 5.25h5.5m8-12.25v14.5"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-      <path
-        d="m17 12-2.75 2.75m2.75-2.75-2.75-2.75"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-    </svg>
-  );
-}
-
-function PanelExpandIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <path
-        d="M7 5v14m4-12.25 5.25 5.25L11 17.25"
         stroke="currentColor"
         strokeLinecap="round"
         strokeLinejoin="round"

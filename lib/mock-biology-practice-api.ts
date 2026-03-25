@@ -27,6 +27,8 @@ export type PracticeStructuredFeedback = {
   offTopicPoints?: string[];
 };
 
+export type PracticeReviewSource = "ai_review" | "fallback_review";
+
 export type GenerateQuestionSelectionStrategy = "fast-initial" | "weighted";
 
 export type GenerateQuestionRequest = {
@@ -59,9 +61,18 @@ export type MarkAnswerRequest = {
   attemptNumber: number | null;
 };
 
-export type MarkAnswerResponse = {
+type BaseMarkAnswerResponse = {
   score: number;
   maxScore: number;
   rubricAssessment: PracticeRubricAssessment[];
   feedback: PracticeStructuredFeedback;
 };
+
+export type MarkAnswerResponse =
+  | (BaseMarkAnswerResponse & {
+      reviewSource: "ai_review";
+    })
+  | (BaseMarkAnswerResponse & {
+      reviewSource: "fallback_review";
+      fallbackReason: string;
+    });
