@@ -297,13 +297,10 @@ function ModuleSection({
           onClick={onToggleSelection}
           type="button"
         >
-            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">
-              {module.label}
-            </p>
-            <p className="mt-1 text-sm font-semibold tracking-tight text-slate-900 dark:text-white">
-              {module.name}
-            </p>
-          </button>
+          <p className="text-sm font-semibold tracking-tight text-slate-900 dark:text-white">
+            {module.name}
+          </p>
+        </button>
         </div>
       </div>
 

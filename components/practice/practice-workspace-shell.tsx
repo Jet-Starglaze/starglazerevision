@@ -1768,7 +1768,8 @@ function ActivePracticeThread({
         : hintRevealCount === 2
           ? "Show example sentence"
           : null;
-  const skipActionLabel = isSkippingQuestion ? "Skipping..." : "Skip question";
+  const skipActionLabel = isSkippingQuestion ? "Skipping..." : "skip";
+  const skipActionAriaLabel = isSkippingQuestion ? "Skipping question" : "Skip question";
   const activePendingAnswerReview =
     pendingAnswerReview?.threadId === thread.threadId ? pendingAnswerReview : null;
 
@@ -1903,7 +1904,7 @@ function ActivePracticeThread({
             onSecondaryAction={onSkipQuestion}
             onSubmit={onSubmitAnswer}
             onValueChange={onAnswerDraftChange}
-            secondaryActionAriaLabel={skipActionLabel}
+            secondaryActionAriaLabel={skipActionAriaLabel}
             secondaryActionDisabled={isMarkingAnswer || isSkippingQuestion}
             secondaryActionLabel={skipActionLabel}
             submitDisabled={
@@ -2014,7 +2015,7 @@ function PhoneActivePracticeThreadView({
             onSecondaryAction={onSkipQuestion}
             onSubmit={onSubmitAnswer}
             onValueChange={onAnswerDraftChange}
-            secondaryActionAriaLabel={skipActionLabel}
+            secondaryActionAriaLabel={skipActionAriaLabel}
             secondaryActionDisabled={isMarkingAnswer || isSkippingQuestion}
             secondaryActionLabel={skipActionLabel}
             showInlineActions={false}

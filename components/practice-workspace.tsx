@@ -34,12 +34,8 @@ export default function PracticeWorkspace({
   const [selectedSubtopicIds, setSelectedSubtopicIds] = useState<Set<number>>(
     () => new Set(),
   );
-  const [expandedModuleIds, setExpandedModuleIds] = useState<number[]>(
-    modules.map((module) => module.id),
-  );
-  const [expandedTopicIds, setExpandedTopicIds] = useState<number[]>(
-    modules.flatMap((module) => module.topics.map((topic) => topic.id)),
-  );
+  const [expandedModuleIds, setExpandedModuleIds] = useState<number[]>([]);
+  const [expandedTopicIds, setExpandedTopicIds] = useState<number[]>([]);
   const [activeMobilePane, setActiveMobilePane] = useState<
     "syllabus" | "session" | null
   >(null);
