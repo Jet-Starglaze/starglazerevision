@@ -1815,6 +1815,7 @@ function ActivePracticeThread({
         revealedHints={revealedHints}
         shouldOfferHint={shouldOfferHint}
         shouldShowComposer={shouldShowComposer}
+        skipActionAriaLabel={skipActionAriaLabel}
         skipActionLabel={skipActionLabel}
         submitAriaLabel={submitAriaLabel}
         thread={thread}
@@ -1943,6 +1944,7 @@ type PhoneActivePracticeThreadViewProps = {
   revealedHints: PracticeHintLevel[];
   shouldOfferHint: boolean;
   shouldShowComposer: boolean;
+  skipActionAriaLabel: string;
   skipActionLabel: string;
   submitAriaLabel: string;
   activePendingAnswerReview: PendingAnswerReview | null;
@@ -1972,6 +1974,7 @@ function PhoneActivePracticeThreadView({
   revealedHints,
   shouldOfferHint,
   shouldShowComposer,
+  skipActionAriaLabel,
   skipActionLabel,
   submitAriaLabel,
   activePendingAnswerReview,
